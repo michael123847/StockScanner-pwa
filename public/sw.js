@@ -1,0 +1,77 @@
+/**
+ * sw.js — Service Worker for the StockScanner PWA (offline app shell).
+ *
+ * Adapted from the family PWA. One cache:
+ *
+ *  APP_SHELL ("shell-vN"): all static files that make up the app (HTML, CSS,
+ *    JS). Strategy: cache-first — serve from cache, fall back to network and
+ *    store the result. Bump VERSION to push a new shell to all clients.
+ *
+ * Local server requests (server.local, *.ts.net, Tailscale/LAN IP ranges) are
+ * NEVER intercepted: they carry the Authorization header and must always return
+ * fresh data, so caching them here would break auth and show stale reports.
+ *
+ * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
+ */
+const VERSION   = 'v1.0.0';
+const APP_SHELL = 'shell-' + VERSION;
+
+// Static files cached on install. If any fails to download, install aborts.
+const SHELL_ASSETS = [
+  './',
+  './index.html',
+  './style.css',
+  './manifest.webmanifest',
+  './src/main.js',
+  './src/config.js',
+  './src/auth.js',
+  './src/localBridge.js',
+  './src/siteConfig.js',
+  './src/viewer.js',
+];
+
+self.addEventListener('install', e => {
+  e.waitUntil((async () => {
+    const cache = await caches.open(APP_SHELL);
+    await cache.addAll(SHELL_ASSETS);
+    await self.skipWaiting();
+  })());
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(k => k !== APP_SHELL).map(k => caches.delete(k)));
+    self.clients.claim();
+  })());
+});
+
+self.addEventListener('fetch', e => {
+  const url = new URL(e.request.url);
+
+  // ── Local / private server (LAN, mDNS, Tailscale) ────────────────────
+  // Never intercept — these need auth headers and fresh data. Returning
+  // without calling e.respondWith() lets the browser handle them directly.
+  if (url.hostname.endsWith('.local') ||
+      url.hostname.endsWith('.ts.net') ||
+      /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(url.hostname) ||
+      /^192\.168\./.test(url.hostname) ||
+      /^10\./.test(url.hostname)) {
+    return;
+  }
+
+  // ── App shell (same origin = GitHub Pages) ───────────────────────────
+  // Cache-first; on a miss, fetch and store so the app works offline.
+  if (url.origin === self.location.origin) {
+    e.respondWith(
+      caches.match(e.request).then(cached => cached || fetch(e.request).then(resp => {
+        if (resp.ok) {
+          const copy = resp.clone();
+          caches.open(APP_SHELL).then(c => c.put(e.request, copy));
+        }
+        return resp;
+      }))
+    );
+  }
+  // Anything else: let the browser handle it (there are no third-party APIs).
+});

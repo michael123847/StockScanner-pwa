@@ -1,0 +1,67 @@
+:root{
+  --bg:#0f1216; --panel:#171b21; --panel2:#1d222a; --line:#2a313c;
+  --fg:#e6e9ee; --muted:#8a93a2; --accent:#4ea1ff;
+  --buy:#2ecc71; --buy-bg:#163a28; --sell:#ff5c5c; --sell-bg:#3a1717; --hold:#c9a227; --hold-bg:#352e10;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}
+
+/* ── header ─────────────────────────────────────────────────────────────── */
+header{padding:14px 18px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:14px;align-items:center;position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+header h1 span{color:var(--accent)}
+.meta{color:var(--muted);font-size:12.5px}
+.meta b{color:var(--fg);font-weight:600}
+.spacer{flex:1}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:6px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--accent)}
+#filter{background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:6px 10px;border-radius:7px;flex:1 1 160px;min-width:120px;max-width:240px}
+select#report{background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:6px 10px;border-radius:7px;max-width:280px;cursor:pointer}
+
+/* server status dot */
+.status-dot{width:9px;height:9px;border-radius:50%;background:var(--sell);flex:0 0 auto;transition:background .3s}
+.status-dot.online{background:var(--buy)}
+
+main{padding:16px 18px;max-width:1500px;margin:0 auto}
+
+/* ── connection / setup UI ──────────────────────────────────────────────── */
+.offline-banner{display:none;margin:14px 0 0;padding:10px 14px;background:var(--sell-bg);color:var(--sell);border:1px solid var(--sell);border-radius:10px;font-size:13px}
+.offline-banner.visible{display:block}
+.setup-card{margin:18px 0;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:560px}
+.setup-card h2{margin:0 0 6px;font-size:15px}
+.setup-card p{margin:6px 0;color:var(--muted);font-size:13px}
+.setup-row{display:flex;gap:8px;margin:10px 0 4px}
+.setup-row input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--fg);padding:8px 10px;border-radius:7px}
+.setup-card a{color:var(--accent)}
+.status-line{color:var(--muted);font-size:12px;margin:12px 0 0}
+.view-error{margin:12px 0 0;color:var(--sell);font-size:13px}
+
+/* ── summary table ──────────────────────────────────────────────────────── */
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+thead th{position:sticky;top:57px;background:var(--panel);cursor:pointer;user-select:none;color:var(--muted);font-weight:600}
+thead th:hover{color:var(--fg)}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--panel)}
+tbody tr.sel{background:var(--panel2);outline:1px solid var(--accent)}
+td a{color:var(--accent);text-decoration:none}
+td a:hover{text-decoration:underline}
+.badge{display:inline-block;min-width:42px;text-align:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px}
+.Buy{color:var(--buy);background:var(--buy-bg)} .Sell{color:var(--sell);background:var(--sell-bg)} .Hold{color:var(--hold);background:var(--hold-bg)}
+.num.neg{color:var(--sell)} .num.pos{color:var(--buy)}
+
+/* ── detail + charts ────────────────────────────────────────────────────── */
+#detail{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:none}
+#detail h2{margin:0 0 2px;font-size:16px}
+#detail .sub{color:var(--muted);font-size:12.5px;margin-bottom:8px}
+.ranges{display:flex;gap:6px;margin:6px 0 12px}
+.ranges .btn.active{border-color:var(--accent);color:var(--accent)}
+.chartwrap{position:relative;margin-bottom:6px}
+canvas{width:100%;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:14px;color:var(--muted);font-size:12px;margin:2px 2px 8px}
+.legend i{display:inline-block;width:14px;height:0;border-top-width:3px;border-top-style:solid;vertical-align:middle;margin-right:5px}
+#tip{position:fixed;pointer-events:none;background:#0b0e12ee;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;display:none;z-index:20;white-space:nowrap}
+#tip .d{color:var(--muted);margin-bottom:4px}
+#tip span.k{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.hint{color:var(--muted);font-size:12px}

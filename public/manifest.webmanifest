@@ -1,0 +1,23 @@
+{
+  "name": "StockScanner",
+  "short_name": "Stocks",
+  "description": "Portfolio scanner: daily recommendations & charts from the local server",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#0f1216",
+  "background_color": "#0f1216",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%230f1216'/><text x='96' y='130' font-size='104' text-anchor='middle'>📈</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='86' fill='%230f1216'/><text x='256' y='350' font-size='280' text-anchor='middle'>📈</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
