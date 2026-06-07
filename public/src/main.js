@@ -3,11 +3,13 @@
  *
  * Flow (mirrors the family PWA, trimmed to one data source):
  *   1. Register the service worker (offline shell).
- *   2. initViewer() — wire the table / chart / report-selector UI (no fetch yet).
- *   3. probeBase() — pick the fastest reachable server base (mDNS / LAN / Tailscale).
- *   4. refresh() — if a token is set and the server answers, fetch the bases
+ *   2. initTabs() — wire bottom-tab navigation.
+ *   3. initViewer() — wire the table / chart / report-selector UI (no fetch yet).
+ *   4. initInfo() — wire the Info & Diagnose tab.
+ *   5. probeBase() — pick the fastest reachable server base (mDNS / LAN / Tailscale).
+ *   6. refresh() — if a token is set and the server answers, fetch the bases
  *      (/api/stocks/config), then load the report manifest + newest report.
- *   5. Poll health every 30 s; toggle the offline banner / status dot and reload
+ *   7. Poll health every 30 s; toggle the offline banner / status dot and reload
  *      the data when the server comes back.
  *
  * The only "internal" value on the device is the shared token (auth.js). The
@@ -18,6 +20,8 @@ import { CONFIG } from './config.js';
 import { getToken, setToken, hasToken } from './auth.js';
 import { refreshConfig } from './siteConfig.js';
 import { initViewer, loadReports, setViewerError } from './viewer.js';
+import { initTabs } from './tabs.js';
+import { initInfo } from './info.js';
 
 const $ = s => document.querySelector(s);
 
@@ -25,7 +29,9 @@ let lastOnline = null; // tracks offline→online transitions for auto-reload
 
 // ── Status / offline UI ─────────────────────────────────────────────────────
 function setStatusDot(online) {
-  $('#status-dot')?.classList.toggle('online', online);
+  const dot = $('#status-dot');
+  dot?.classList.toggle('online', online);
+  dot?.classList.toggle('offline', !online);
   // Only nag about being offline once the user has a token (i.e. expects data).
   $('#offline')?.classList.toggle('visible', hasToken() && !online);
   window.dispatchEvent(new CustomEvent('pwa:server', { detail: online }));
@@ -93,15 +99,6 @@ function wireSetup() {
   $('#token-input')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') $('#token-save')?.click();
   });
-  // Header gear toggles the setup card (to change/clear the token, or open the
-  // certificate-install guide).
-  $('#settings-btn')?.addEventListener('click', () => {
-    const card = $('#setup');
-    if (card) {
-      card.hidden = !card.hidden;
-      if (!card.hidden && hasToken()) $('#token-input')?.focus();
-    }
-  });
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
@@ -110,7 +107,9 @@ function wireSetup() {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 
+  initTabs();
   initViewer();
+  initInfo();
   wireSetup();
 
   await probeBase();

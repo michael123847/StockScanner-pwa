@@ -22,6 +22,11 @@ const COL = {
 };
 let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infinity, hoverIdx=null;
 
+// Track whether the Charts page is visible (clientWidth/Height == 0 when hidden).
+let chartsVisible = false;
+// Guard resize: only redraw on actual width changes, not URL-bar height jitter.
+let lastW = 0;
+
 // ---------- formatting ----------
 const isNum = v => typeof v==='number' && isFinite(v);
 const fNum=(v,d=2)=> isNum(v)? v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
@@ -67,6 +72,7 @@ function load(json){
   $('#meta').innerHTML = `<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(json.generated||'')}`;
   $('#tbl').style.display='';
   renderHead(); renderBody();
+  populateChartTicker();
   if(ROWS.length) select(ROWS[0].ticker);
 }
 
@@ -102,6 +108,16 @@ function populateReports(list, current){
   sel.onchange=()=>apiJson(reportUrl(sel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
 }
 
+// Populate the chart-ticker <select> in the Charts tab.
+function populateChartTicker(){
+  const sel=$('#chart-ticker'); if(!sel) return;
+  if(!ROWS.length){ sel.style.display='none'; return; }
+  sel.innerHTML = ROWS.map(r=>`<option value="${esc(r.ticker)}">${esc(r.name)} (${esc(r.ticker)})</option>`).join('');
+  sel.value = selected || ROWS[0].ticker;
+  sel.style.display='';
+  sel.onchange=()=>select(sel.value);
+}
+
 // ---------- table ----------
 function renderHead(){
   const tr=document.createElement('tr');
@@ -132,7 +148,11 @@ function renderBody(){
     if(r.ticker===selected) tr.className='sel';
     COLS.forEach(c=>{ const td=document.createElement('td'); const val=c[1](r);
       td.innerHTML = c[2](val,r); if(c[3]==='l') td.style.textAlign='left'; tr.appendChild(td); });
-    tr.onclick=()=>select(r.ticker);
+    tr.onclick=()=>{
+      select(r.ticker);
+      // Navigate to Charts tab so the user sees the chart immediately.
+      window.dispatchEvent(new CustomEvent('pwa:navigate', { detail: 'charts' }));
+    };
     tb.appendChild(tr);
   }
 }
@@ -141,13 +161,16 @@ function renderBody(){
 function select(ticker){
   selected=ticker;
   document.querySelectorAll('#tbl tbody tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.ticker===ticker));
+  // Sync the chart-ticker dropdown.
+  const sel=$('#chart-ticker'); if(sel && sel.value!==ticker) sel.value=ticker;
   const r=ROWS.find(t=>t.ticker===ticker); if(!r) return;
-  $('#detail').style.display='block';
   $('#d-name').textContent = r.name;
   $('#d-sub').innerHTML = `${tickerCell(r)} &nbsp;·&nbsp; ${esc(r.exchange||'')} &nbsp;·&nbsp; `+
     `Rule ${badge(r.s['Recommendation_3_1'])} ML ${badge(r.s['Recommendation_ML'])} Hindsight ${badge(r.s['Optimal_hindsight'])}`;
   renderRanges();
-  draw();
+  // Only draw if the charts page is currently visible — a hidden page has
+  // clientWidth==0 which would produce a 1×1 buffer.
+  if(chartsVisible) draw();
 }
 function renderRanges(){
   const opts=[['Full',Infinity],['120d',120],['60d',60]];
@@ -164,12 +187,26 @@ function curSeries(){
 }
 function legend(el, items){ el.innerHTML = items.map(([c,t,dash])=>`<span><i style="border-color:${c};border-top-style:${dash?'dashed':'solid'}"></i>${esc(t)}</span>`).join(''); }
 
+/**
+ * setupCanvas — CSS-driven sizing that never reads back the buffer attribute.
+ *
+ * The old code read cv.getAttribute('height') then wrote cv.height = h*dpr,
+ * which reflects back into the attribute. Each call on mobile (dpr≈3) tripled
+ * the displayed height. Fixed: read clientWidth/clientHeight (the CSS box,
+ * always stable), compute buffer pixels from those, and only assign when the
+ * buffer actually needs to change.
+ */
 function setupCanvas(cv){
-  const dpr=window.devicePixelRatio||1; const w=cv.clientWidth, h=parseInt(cv.getAttribute('height'));
-  cv.style.height=h+'px';
-  cv.width=Math.max(1,w*dpr); cv.height=h*dpr; const ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
-  return {ctx,w,h};
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;   // CSS box — never the buffer
+  const bw = Math.max(1, Math.round(w*dpr)), bh = Math.max(1, Math.round(h*dpr));
+  if (cv.width  !== bw) cv.width  = bw;            // resize buffer only when changed
+  if (cv.height !== bh) cv.height = bh;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {ctx, w, h};
 }
+
 function niceBounds(vals){
   let mn=Infinity,mx=-Infinity; for(const v of vals) if(isNum(v)){ if(v<mn)mn=v; if(v>mx)mx=v; }
   if(mn===Infinity){mn=0;mx=1;} if(mn===mx){mn-=1;mx+=1;}
@@ -238,12 +275,14 @@ function draw(){
     series:[{data:S.rsi,color:COL.rsi,width:1.6}] });
 }
 
-// ---------- shared hover ----------
+// ---------- shared hover (mouse + touch) ----------
 function onMove(e){
   const S=curSeries(); if(!S) return; const n=(S.date||[]).length; if(!n) return;
   const cv=e.currentTarget, rect=cv.getBoundingClientRect(); const g=charts.price&&charts.price._geom;
   const PL=g?g.PL:54, PR=g?g.PR:12; const plotW=rect.width-PL-PR;
-  let idx=Math.round((e.clientX-rect.left-PL)/plotW*(n-1));
+  // Support both mouse and touch events.
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  let idx=Math.round((clientX-rect.left-PL)/plotW*(n-1));
   idx=Math.max(0,Math.min(n-1,idx)); hoverIdx=idx; draw(); showTip(e,S,idx);
 }
 function showTip(e,S,i){
@@ -256,9 +295,13 @@ function showTip(e,S,i){
   ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
   tip.innerHTML=`<div class="d">${esc((S.date&&S.date[i])||'')}</div>${rows}`;
   tip.style.display='block';
-  const pad=14; let x=e.clientX+pad, y=e.clientY+pad;
-  if(x+tip.offsetWidth>innerWidth) x=e.clientX-tip.offsetWidth-pad;
-  if(y+tip.offsetHeight>innerHeight) y=e.clientY-tip.offsetHeight-pad;
+  const pad=14;
+  // Support both mouse and touch events for tooltip positioning.
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  let x=clientX+pad, y=clientY+pad;
+  if(x+tip.offsetWidth>innerWidth) x=clientX-tip.offsetWidth-pad;
+  if(y+tip.offsetHeight>innerHeight) y=clientY-tip.offsetHeight-pad;
   tip.style.left=x+'px'; tip.style.top=y+'px';
 }
 function onLeave(){ hoverIdx=null; $('#tip').style.display='none'; draw(); }
@@ -266,7 +309,35 @@ function onLeave(){ hoverIdx=null; $('#tip').style.display='none'; draw(); }
 // ---------- init ----------
 export function initViewer(){
   $('#filter').oninput=renderBody;
+
   ['c-price','c-rec','c-rsi'].forEach(id=>{ const cv=$('#'+id); if(!cv) return;
-    cv.addEventListener('mousemove',onMove); cv.addEventListener('mouseleave',onLeave); });
-  let rz; addEventListener('resize',()=>{ clearTimeout(rz); rz=setTimeout(()=>{ if(selected) draw(); },120); });
+    cv.addEventListener('mousemove', onMove);
+    cv.addEventListener('mouseleave', onLeave);
+    // Passive touch hover — `touch-action:pan-y` (CSS) lets vertical page
+    // scrolling pass through; we only read the finger X for the crosshair, so
+    // we never preventDefault (which would trap the canvas-heavy page's scroll).
+    cv.addEventListener('touchstart', onMove, {passive:true});
+    cv.addEventListener('touchmove',  onMove, {passive:true});
+    cv.addEventListener('touchend',   onLeave);
+  });
+
+  // Initialize from the current DOM: the restored tab may already be Charts,
+  // whose pwa:tab event fired during initTabs() before this listener existed.
+  chartsVisible = document.getElementById('page-charts')?.classList.contains('active') || false;
+  // Track Charts tab visibility — hidden page has clientWidth==0.
+  window.addEventListener('pwa:tab', e=>{
+    chartsVisible = e.detail === 'charts';
+    if(chartsVisible && selected){ lastW=0; draw(); }
+  });
+
+  // Width-guarded resize: only redraw on actual width changes (not URL-bar jitter).
+  let rz;
+  addEventListener('resize', ()=>{
+    clearTimeout(rz);
+    rz = setTimeout(()=>{
+      if(!chartsVisible || !selected) return;
+      const w = ($('#c-price')||{}).clientWidth || 0;
+      if(w !== lastW){ lastW=w; draw(); }
+    }, 120);
+  });
 }

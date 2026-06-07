@@ -13,7 +13,7 @@
  *
  * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
  */
-const VERSION   = 'v1.0.0';
+const VERSION   = 'v1.1.0';
 const APP_SHELL = 'shell-' + VERSION;
 
 // Static files cached on install. If any fails to download, install aborts.
@@ -28,6 +28,8 @@ const SHELL_ASSETS = [
   './src/localBridge.js',
   './src/siteConfig.js',
   './src/viewer.js',
+  './src/tabs.js',
+  './src/info.js',
 ];
 
 self.addEventListener('install', e => {
