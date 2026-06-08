@@ -37,7 +37,7 @@ function platformLabel() {
 /** The version tag embedded in the Service Worker shell cache (e.g. "v1.1.0"). */
 async function swCacheVersion() {
   try {
-    const shell = (await caches.keys()).find(k => k.startsWith('shell-'));
+    const shell = (await caches.keys()).find(k => k.startsWith('ss-shell-'));
     return shell ? shell.replace('shell-', '') : '—';
   } catch {
     return '—';

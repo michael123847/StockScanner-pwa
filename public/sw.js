@@ -14,7 +14,9 @@
  * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
  */
 const VERSION   = 'v1.1.1';
-const APP_SHELL = 'shell-' + VERSION;
+// App-specific prefix avoids cross-contamination with other PWAs on the same
+// GitHub Pages origin whose caches are visible via the shared caches API.
+const APP_SHELL = 'ss-shell-' + VERSION;
 
 // Static files cached on install. If any fails to download, install aborts.
 const SHELL_ASSETS = [
@@ -43,7 +45,13 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(k => k !== APP_SHELL).map(k => caches.delete(k)));
+    // Only delete caches that belong to this app (own prefix or legacy unprefixed
+    // names). Never touch caches owned by other apps on the same origin.
+    await Promise.all(
+      keys.filter(k =>
+        k !== APP_SHELL && (k.startsWith('ss-shell-') || k.startsWith('shell-'))
+      ).map(k => caches.delete(k))
+    );
     self.clients.claim();
   })());
 });
