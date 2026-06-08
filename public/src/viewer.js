@@ -27,6 +27,26 @@ let chartsVisible = false;
 // Guard resize: only redraw on actual width changes, not URL-bar height jitter.
 let lastW = 0;
 
+// ---------- chart prefs ----------
+let chartType = 'line'; // 'line' | 'candle'
+let show50 = true, show200 = true, showFib = true;
+
+const CHART_PREFS_KEY = 'pwa.stocks.chartPrefs';
+
+function loadChartPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(CHART_PREFS_KEY) || '{}');
+    if (p.type === 'candle' || p.type === 'line') chartType = p.type;
+    if (typeof p.ma50 === 'boolean') show50 = p.ma50;
+    if (typeof p.ma200 === 'boolean') show200 = p.ma200;
+    if (typeof p.fib === 'boolean') showFib = p.fib;
+  } catch {}
+}
+
+function saveChartPrefs() {
+  try { localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({ type: chartType, ma50: show50, ma200: show200, fib: showFib })); } catch {}
+}
+
 // ---------- formatting ----------
 const isNum = v => typeof v==='number' && isFinite(v);
 const fNum=(v,d=2)=> isNum(v)? v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
@@ -36,8 +56,8 @@ const recRank={Buy:3,Hold:2,Sell:1};
 
 // summary-table columns: [label, key-getter, formatter, css-align]
 const COLS = [
-  ['Name',     r=>r.name,                  v=>esc(v),               'l'],
   ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
+  ['Name',     r=>r.name,                  v=>esc(v),               'l'],
   ['Rule',     r=>r.s['Recommendation_3_1'], v=>badge(v),           'b'],
   ['ML',       r=>r.s['Recommendation_ML'],  v=>badge(v),           'b'],
   ['Hindsight',r=>r.s['Optimal_hindsight'],  v=>badge(v),           'b'],
@@ -168,6 +188,31 @@ function select(ticker){
   $('#d-sub').innerHTML = `${tickerCell(r)} &nbsp;·&nbsp; ${esc(r.exchange||'')} &nbsp;·&nbsp; `+
     `Rule ${badge(r.s['Recommendation_3_1'])} ML ${badge(r.s['Recommendation_ML'])} Hindsight ${badge(r.s['Optimal_hindsight'])}`;
   renderRanges();
+
+  // Enable/disable candle button depending on OHLC availability
+  const hasOHLC = Array.isArray(r.series && r.series.open) && (r.series.open||[]).length > 0;
+  const btnCandle = $('#btn-candle'), btnLine = $('#btn-line');
+  if (btnCandle) {
+    if (hasOHLC) {
+      btnCandle.disabled = false;
+      btnCandle.removeAttribute('title');
+      // Restore saved chartType preference
+      loadChartPrefs();
+    } else {
+      btnCandle.disabled = true;
+      btnCandle.title = 'OHLC ab nächstem Scan verfügbar';
+      chartType = 'line';
+    }
+    // Sync active button state
+    if (chartType === 'candle' && hasOHLC) {
+      btnCandle.classList.add('active');
+      if (btnLine) btnLine.classList.remove('active');
+    } else {
+      if (btnLine) btnLine.classList.add('active');
+      btnCandle.classList.remove('active');
+    }
+  }
+
   // Only draw if the charts page is currently visible — a hidden page has
   // clientWidth==0 which would produce a 1×1 buffer.
   if(chartsVisible) draw();
@@ -220,6 +265,31 @@ function plot(cfg){
   const xAt=i=> PL + (n<=1?0:(i/(n-1))*plotW);
   const yAt=v=> PT + (1-(v-cfg.yMin)/(cfg.yMax-cfg.yMin))*plotH;
   ctx.clearRect(0,0,w,h);
+
+  // Candlestick rendering (drawn before grid lines so grid sits on top)
+  if (cfg.candles && cfg.candles.length) {
+    const bw = Math.max(1, (plotW / cfg.candles.length) * 0.7);
+    cfg.candles.forEach(({o, h: hi, l, c}, i) => {
+      if (o == null || hi == null || l == null || c == null) return;
+      const x = xAt(i);
+      const bullish = c >= o;
+      const color = bullish ? '#4dff88' : '#ff4d4d';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      // Wick
+      ctx.beginPath();
+      ctx.moveTo(x, yAt(hi));
+      ctx.lineTo(x, yAt(l));
+      ctx.stroke();
+      // Body
+      const y1 = yAt(Math.max(o, c));
+      const y2 = yAt(Math.min(o, c));
+      const bodyH = Math.max(1, y2 - y1);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - bw / 2, y1, bw, bodyH);
+    });
+  }
+
   ctx.font='11px system-ui,Arial'; ctx.textBaseline='middle';
   ctx.strokeStyle='#2a313c'; ctx.fillStyle='#8a93a2'; ctx.lineWidth=1;
   const ticks=cfg.yticks||4;
@@ -246,20 +316,44 @@ function plot(cfg){
 let charts={};
 function draw(){
   const S=curSeries(); if(!S) return;
-  charts.price = plot({ canvas:$('#c-price'), x:S.date,
-    ...((b)=>({yMin:b[0],yMax:b[1]}))(niceBounds([].concat(S.close||[], S.ma200||[], S.fib_764||[], S.fib_236||[]))),
-    yticks:5, yfmt:v=>v.toFixed(v>=1000?0:2),
-    series:[
-      {data:S.close,color:COL.close,width:2},
-      {data:S.ma50,color:COL.ma50,width:1.4},
-      {data:S.ma200,color:COL.ma200,width:1.4},
-      {data:S.fib_236,color:COL.fib[0],width:1,dash:[5,4]},
-      {data:S.fib_382,color:COL.fib[1],width:1,dash:[5,4]},
-      {data:S.fib_618,color:COL.fib[2],width:1,dash:[5,4]},
-      {data:S.fib_764,color:COL.fib[3],width:1,dash:[5,4]},
-    ]});
-  legend($('#lg-price'),[[COL.close,'Close'],[COL.ma50,'50 MA'],[COL.ma200,'200 MA'],
-    [COL.fib[0],'Fib 23.6%',1],[COL.fib[1],'38.2%',1],[COL.fib[2],'61.8%',1],[COL.fib[3],'76.4%',1]]);
+
+  // --- Price chart ---
+  const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
+
+  // Build overlay series (MA + Fib) respecting checkbox state
+  const overlaySeries = [];
+  const legendItems = [];
+  if (show50 && S.ma50) { overlaySeries.push({data:S.ma50,color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
+  if (show200 && S.ma200) { overlaySeries.push({data:S.ma200,color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
+  if (showFib) {
+    if (S.fib_236) { overlaySeries.push({data:S.fib_236,color:COL.fib[0],width:1,dash:[5,4]}); legendItems.push([COL.fib[0],'Fib 23.6%',1]); }
+    if (S.fib_382) { overlaySeries.push({data:S.fib_382,color:COL.fib[1],width:1,dash:[5,4]}); legendItems.push([COL.fib[1],'38.2%',1]); }
+    if (S.fib_618) { overlaySeries.push({data:S.fib_618,color:COL.fib[2],width:1,dash:[5,4]}); legendItems.push([COL.fib[2],'61.8%',1]); }
+    if (S.fib_764) { overlaySeries.push({data:S.fib_764,color:COL.fib[3],width:1,dash:[5,4]}); legendItems.push([COL.fib[3],'76.4%',1]); }
+  }
+
+  if (useCandle) {
+    // Y-bounds from high/low + overlays
+    const overlayVals = overlaySeries.flatMap(s => s.data || []);
+    const [yMin, yMax] = niceBounds([].concat(S.high||[], S.low||[], overlayVals));
+    const candles = (S.open).map((o,i) => ({o, h:S.high[i], l:S.low[i], c:S.close[i]}));
+    charts.price = plot({
+      canvas: $('#c-price'), x: S.date, yMin, yMax,
+      yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
+      candles,
+      series: overlaySeries,
+    });
+    legend($('#lg-price'), [['#4dff88','Kerzen (Kauf)'],['#ff4d4d','Kerzen (Verk.)'], ...legendItems]);
+  } else {
+    // Line mode
+    const [yMin, yMax] = niceBounds([].concat(S.close||[], S.ma200||[], S.fib_764||[], S.fib_236||[]));
+    charts.price = plot({
+      canvas: $('#c-price'), x: S.date, yMin, yMax,
+      yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
+      series: [{data:S.close,color:COL.close,width:2}, ...overlaySeries],
+    });
+    legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
+  }
 
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
@@ -286,13 +380,31 @@ function onMove(e){
   idx=Math.max(0,Math.min(n-1,idx)); hoverIdx=idx; draw(); showTip(e,S,idx);
 }
 function showTip(e,S,i){
-  const tip=$('#tip'); const rows=[
-    ['Close',COL.close,fNum(S.close&&S.close[i],2)],
-    ['50 MA',COL.ma50,fNum(S.ma50&&S.ma50[i],2)],
-    ['200 MA',COL.ma200,fNum(S.ma200&&S.ma200[i],2)],
-    ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
-    ['ML',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
-  ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
+  const tip=$('#tip');
+  const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
+  let rows;
+  if (useCandle) {
+    const c = S.close&&S.close[i]; const o = S.open&&S.open[i];
+    const bullish = (c != null && o != null) ? c >= o : true;
+    const candleColor = bullish ? '#4dff88' : '#ff4d4d';
+    rows = [
+      ['O', candleColor, fNum(o, 2)],
+      ['H', candleColor, fNum(S.high&&S.high[i], 2)],
+      ['L', candleColor, fNum(S.low&&S.low[i], 2)],
+      ['C', candleColor, fNum(c, 2)],
+      ['50 MA',COL.ma50,fNum(S.ma50&&S.ma50[i],2)],
+      ['200 MA',COL.ma200,fNum(S.ma200&&S.ma200[i],2)],
+      ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
+    ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
+  } else {
+    rows = [
+      ['Close',COL.close,fNum(S.close&&S.close[i],2)],
+      ['50 MA',COL.ma50,fNum(S.ma50&&S.ma50[i],2)],
+      ['200 MA',COL.ma200,fNum(S.ma200&&S.ma200[i],2)],
+      ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
+      ['ML',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
+    ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
+  }
   tip.innerHTML=`<div class="d">${esc((S.date&&S.date[i])||'')}</div>${rows}`;
   tip.style.display='block';
   const pad=14;
@@ -319,6 +431,43 @@ export function initViewer(){
     cv.addEventListener('touchstart', onMove, {passive:true});
     cv.addEventListener('touchmove',  onMove, {passive:true});
     cv.addEventListener('touchend',   onLeave);
+  });
+
+  // Load persisted chart prefs and sync checkbox DOM
+  loadChartPrefs();
+  const ma50El = document.getElementById('chk-ma50');
+  const ma200El = document.getElementById('chk-ma200');
+  const fibEl = document.getElementById('chk-fib');
+  if (ma50El) ma50El.checked = show50;
+  if (ma200El) ma200El.checked = show200;
+  if (fibEl) fibEl.checked = showFib;
+
+  // Wire chart-type buttons
+  document.getElementById('btn-line')?.addEventListener('click', () => {
+    chartType = 'line';
+    document.getElementById('btn-line').classList.add('active');
+    document.getElementById('btn-candle').classList.remove('active');
+    saveChartPrefs();
+    draw();
+  });
+  document.getElementById('btn-candle')?.addEventListener('click', () => {
+    if (document.getElementById('btn-candle').disabled) return;
+    chartType = 'candle';
+    document.getElementById('btn-candle').classList.add('active');
+    document.getElementById('btn-line').classList.remove('active');
+    saveChartPrefs();
+    draw();
+  });
+
+  // Wire overlay checkboxes
+  ['chk-ma50', 'chk-ma200', 'chk-fib'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', e => {
+      if (id === 'chk-ma50') show50 = e.target.checked;
+      if (id === 'chk-ma200') show200 = e.target.checked;
+      if (id === 'chk-fib') showFib = e.target.checked;
+      saveChartPrefs();
+      draw();
+    });
   });
 
   // Initialize from the current DOM: the restored tab may already be Charts,

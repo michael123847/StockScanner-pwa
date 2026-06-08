@@ -47,6 +47,15 @@
       <h2 id="d-name"></h2>
       <div class="sub" id="d-sub"></div>
       <div class="ranges" id="ranges"></div>
+      <div class="chart-controls" id="chart-type-bar">
+        <button class="btn chart-type-btn active" id="btn-line" data-type="line">Linie</button>
+        <button class="btn chart-type-btn" id="btn-candle" data-type="candle">Kerzen</button>
+      </div>
+      <div class="overlay-checks" id="overlay-checks">
+        <label><input type="checkbox" id="chk-ma50" checked> 50 MA</label>
+        <label><input type="checkbox" id="chk-ma200" checked> 200 MA</label>
+        <label><input type="checkbox" id="chk-fib" checked> Fib</label>
+      </div>
 
       <div class="legend" id="lg-price"></div>
       <div class="chartwrap"><canvas id="c-price"></canvas></div>

@@ -85,9 +85,11 @@ th,td{padding:5px 8px;border-bottom:1px solid var(--card-border);text-align:righ
 th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
 thead th{position:sticky;top:0;background:var(--bg);cursor:pointer;user-select:none;color:var(--text-dim);font-weight:600;z-index:2}
 thead th:hover{color:var(--text)}
-/* sticky first column (name) */
+/* sticky first column (ticker) */
 th:first-child,td:first-child{position:sticky;left:0;background:var(--bg);z-index:1}
 thead th:first-child{z-index:3}
+/* constrain name column so long fund names don't blow the layout */
+th:nth-child(2),td:nth-child(2){max-width:46vw;overflow:hidden;text-overflow:ellipsis}
 tbody tr{cursor:pointer}
 tbody tr:hover{background:var(--panel2)}
 tbody tr.sel{background:rgba(77,136,255,.1);outline:1px solid var(--accent)}
@@ -103,8 +105,14 @@ td a:hover{text-decoration:underline}
 #detail{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:14px}
 #detail h2{font-size:16px;margin:0 0 2px}
 #detail .sub{color:var(--text-dim);font-size:12.5px;margin-bottom:8px}
-.ranges{display:flex;gap:6px;margin:6px 0 12px}
+.ranges{display:flex;gap:6px;margin:6px 0 6px}
 .ranges .btn.active{border-color:var(--accent);color:var(--accent)}
+.chart-controls{display:flex;gap:8px;padding:8px 12px 0}
+.chart-type-btn{flex:1;padding:6px 0;font-size:.85rem;background:var(--card);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:var(--fg);cursor:pointer}
+.chart-type-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.chart-type-btn:disabled{opacity:.35;cursor:not-allowed}
+.overlay-checks{display:flex;gap:16px;padding:8px 12px;font-size:.85rem;color:var(--fg-muted,rgba(255,255,255,.6))}
+.overlay-checks label{display:flex;align-items:center;gap:4px;cursor:pointer}
 .chartwrap{position:relative;margin-bottom:6px;touch-action:pan-y}
 /* CSS-driven canvas heights — never read back the buffer size */
 canvas{width:100%;display:block;touch-action:pan-y}
