@@ -22,6 +22,7 @@ import { refreshConfig } from './siteConfig.js';
 import { initViewer, loadReports, setViewerError } from './viewer.js';
 import { initTabs } from './tabs.js';
 import { initInfo } from './info.js';
+import { initPortfolio } from './portfolio.js';
 
 const $ = s => document.querySelector(s);
 
@@ -110,6 +111,7 @@ function wireSetup() {
   initTabs();
   initViewer();
   initInfo();
+  initPortfolio();
   wireSetup();
 
   await probeBase();

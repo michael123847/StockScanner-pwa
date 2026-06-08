@@ -147,3 +147,16 @@ canvas{width:100%;display:block;touch-action:pan-y}
 #tip{position:fixed;pointer-events:none;background:#0b0e12ee;border:1px solid var(--card-border);border-radius:8px;padding:8px 10px;font-size:12px;display:none;z-index:200;white-space:nowrap}
 #tip .d{color:var(--text-dim);margin-bottom:4px}
 #tip span.k{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+
+/* ── Portfolio tab ───────────────────────────────────────────────────────── */
+.pf-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+#pf-toast{padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:10px;transition:opacity .4s}
+#pf-toast.toast-ok{background:rgba(46,204,113,.15);color:#2ecc71;border:1px solid rgba(46,204,113,.3)}
+#pf-toast.toast-err{background:rgba(255,92,92,.15);color:#ff5c5c;border:1px solid rgba(255,92,92,.3)}
+.pf-table{width:100%;border-collapse:collapse;font-size:13px}
+.pf-table th{text-align:left;padding:6px 8px;color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--card-border)}
+.pf-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}
+.pf-table td[contenteditable]{outline:none;cursor:text}
+.pf-table td[contenteditable]:focus{background:rgba(255,255,255,.05);border-radius:4px}
+.pf-table .del-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:15px;padding:2px 6px}
+.pf-table .del-btn:hover{color:#ff5c5c}
