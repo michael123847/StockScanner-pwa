@@ -32,7 +32,7 @@ function toast(msg, ok) {
 function buildTable(entries) {
   const tbl = document.createElement('table');
   tbl.className = 'pf-table';
-  tbl.innerHTML = '<thead><tr><th>Ticker</th><th>Name</th><th>Country</th><th></th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>Ticker</th><th>Name</th><th></th></tr></thead>';
   const tbody = document.createElement('tbody');
 
   entries.forEach(e => tbody.appendChild(buildRow(e)));
@@ -40,13 +40,13 @@ function buildTable(entries) {
   return tbl;
 }
 
-function buildRow({ ticker = '', name = '', country = '' } = {}) {
+function buildRow({ ticker = '', name = '' } = {}) {
   const tr = document.createElement('tr');
-  ['ticker', 'name', 'country'].forEach(field => {
+  ['ticker', 'name'].forEach(field => {
     const td = document.createElement('td');
     td.contentEditable = 'true';
     td.dataset.field = field;
-    td.textContent = field === 'ticker' ? ticker : field === 'name' ? name : country;
+    td.textContent = field === 'ticker' ? ticker : name;
     td.addEventListener('input', () => { _dirty = true; });
     tr.appendChild(td);
   });
@@ -68,10 +68,108 @@ function buildRow({ ticker = '', name = '', country = '' } = {}) {
 function collectRows() {
   if (!$body) return [];
   return [...$body.querySelectorAll('.pf-table tbody tr')].map(tr => ({
-    ticker:  tr.querySelector('[data-field=ticker]')?.textContent.trim()  || '',
-    name:    tr.querySelector('[data-field=name]')?.textContent.trim()    || '',
-    country: tr.querySelector('[data-field=country]')?.textContent.trim() || '',
+    ticker: tr.querySelector('[data-field=ticker]')?.textContent.trim() || '',
+    name:   tr.querySelector('[data-field=name]')?.textContent.trim()   || '',
   })).filter(e => e.ticker);
+}
+
+// ── Search dropdown ───────────────────────────────────────────────────────
+let _searchTimer = null;
+
+function getExistingTickers() {
+  return new Set(collectRows().map(e => e.ticker.toUpperCase()));
+}
+
+function hideResults() {
+  const $results = document.getElementById('pf-search-results');
+  if ($results) $results.hidden = true;
+}
+
+function renderResults(items) {
+  const $results = document.getElementById('pf-search-results');
+  if (!$results) return;
+  $results.innerHTML = '';
+  if (!items.length) { $results.hidden = true; return; }
+
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.className = 'pf-result-item';
+    li.textContent = `${item.symbol} — ${item.name}${item.exchange ? ' · ' + item.exchange : ''}`;
+    li.addEventListener('mousedown', e => {
+      e.preventDefault();   // prevent input blur before click fires
+      addFromSearch(item);
+    });
+    $results.appendChild(li);
+  });
+  $results.hidden = false;
+}
+
+function addFromSearch(item) {
+  const existing = getExistingTickers();
+  if (existing.has(item.symbol.toUpperCase())) {
+    toast('Schon in der Liste: ' + item.symbol, false);
+    hideResults();
+    const $input = document.getElementById('pf-search-input');
+    if ($input) $input.value = '';
+    return;
+  }
+
+  let tbody = $body.querySelector('.pf-table tbody');
+  if (!tbody) {
+    $body.innerHTML = '';
+    const tbl = buildTable([]);
+    $body.appendChild(tbl);
+    tbody = tbl.querySelector('tbody');
+  }
+  tbody.appendChild(buildRow({ ticker: item.symbol, name: item.name }));
+  _dirty = true;
+
+  hideResults();
+  const $input = document.getElementById('pf-search-input');
+  if ($input) $input.value = '';
+}
+
+function initSearch() {
+  const $input = document.getElementById('pf-search-input');
+  const $results = document.getElementById('pf-search-results');
+  if (!$input || !$results) return;
+
+  $input.addEventListener('input', () => {
+    clearTimeout(_searchTimer);
+    const q = $input.value.trim();
+    if (q.length < 2) { hideResults(); return; }
+    _searchTimer = setTimeout(() => doSearch(q), 250);
+  });
+
+  $input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { hideResults(); $input.value = ''; }
+  });
+
+  $input.addEventListener('blur', () => {
+    // Delay so mousedown on a result item fires first
+    setTimeout(hideResults, 150);
+  });
+
+  document.addEventListener('click', e => {
+    if (!$input.contains(e.target) && !$results.contains(e.target)) {
+      hideResults();
+    }
+  });
+}
+
+async function doSearch(q) {
+  try {
+    const r = await fetch(
+      getActiveBase() + CONFIG.STOCKS_SEARCH_PATH + '?q=' + encodeURIComponent(q),
+      { headers: authHeaders(), cache: 'no-store', credentials: 'omit' },
+    );
+    if (r.status === 401) { toast('Token abgelehnt — Info-Tab öffnen.', false); return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const items = await r.json();
+    renderResults(items);
+  } catch (e) {
+    hideResults();
+  }
 }
 
 // ── API ───────────────────────────────────────────────────────────────────
@@ -155,6 +253,7 @@ export function initPortfolio() {
   if (!$body) return;
 
   buildToolbar();
+  initSearch();
 
   window.addEventListener('pwa:tab', e => {
     if (e.detail === 'portfolio' && !_loaded) load();
