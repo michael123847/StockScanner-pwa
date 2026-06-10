@@ -61,7 +61,7 @@ async function render() {
     swCacheVersion(),
   ]);
 
-  const versionMatch = CONFIG.APP_VERSION === swVer;
+  const versionMatch = CONFIG.APP_VERSION === swVer.replace(/^ss-/, '');
   box.innerHTML = [
     row('App-Version',  CONFIG.APP_VERSION, versionMatch ? 'good' : 'warn'),
     row('Service Worker', swVer),
