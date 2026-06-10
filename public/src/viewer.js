@@ -58,6 +58,7 @@ const recRank={Buy:3,Hold:2,Sell:1};
 const COLS = [
   ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
   ['Name',     r=>r.name,                  v=>esc(v),               'l'],
+  ['Δ1D',     r=>{ const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
   ['Rule',     r=>r.s['Recommendation_3_1'], v=>badge(v),           'b'],
   ['ML',       r=>r.s['Recommendation_ML'],  v=>badge(v),           'b'],
   ['Hindsight',r=>r.s['Optimal_hindsight'],  v=>badge(v),           'b'],
