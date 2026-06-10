@@ -124,7 +124,12 @@ export async function loadReports(){
 function populateReports(list, current){
   const sel=$('#report'); if(!sel) return;
   if(!list||!list.length){ sel.style.display='none'; return; }
-  sel.innerHTML = list.map(e=>`<option value="${esc(e.file)}">${esc(e.portfolio||e.file)} · ${esc((e.generated||'').slice(0,10))}${e.count?` · ${e.count}`:''}</option>`).join('');
+  // Group reports by list name (optgroup); newest-first order preserved within each.
+  const groups=new Map();
+  for(const e of list){ const k=e.portfolio||e.file; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(e); }
+  sel.innerHTML=[...groups].map(([name,items])=>
+    `<optgroup label="${esc(name)}">`+items.map(e=>`<option value="${esc(e.file)}">${esc((e.generated||'').slice(0,10))}${e.count?` · ${e.count}`:''}</option>`).join('')+`</optgroup>`
+  ).join('');
   sel.value = current || list[0].file; sel.style.display='';
   sel.onchange=()=>apiJson(reportUrl(sel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
 }
@@ -219,7 +224,7 @@ function select(ticker){
   if(chartsVisible) draw();
 }
 function renderRanges(){
-  const opts=[['Full',Infinity],['120d',120],['60d',60]];
+  const opts=[['Full',Infinity],['120d',120],['60d',60],['14d',14]];
   const box=$('#ranges'); box.innerHTML='';
   opts.forEach(([lbl,n])=>{ const b=document.createElement('button'); b.className='btn'+(viewLen===n?' active':''); b.textContent=lbl;
     b.onclick=()=>{ viewLen=n; renderRanges(); draw(); }; box.appendChild(b); });

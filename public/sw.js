@@ -13,7 +13,7 @@
  *
  * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
  */
-const VERSION   = 'v1.3.3';
+const VERSION   = 'v1.3.4';
 // App-specific prefix avoids cross-contamination with other PWAs on the same
 // GitHub Pages origin whose caches are visible via the shared caches API.
 const APP_SHELL = 'ss-shell-' + VERSION;
