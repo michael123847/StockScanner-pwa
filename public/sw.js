@@ -13,7 +13,7 @@
  *
  * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
  */
-const VERSION   = 'v1.3.2';
+const VERSION   = 'v1.3.3';
 // App-specific prefix avoids cross-contamination with other PWAs on the same
 // GitHub Pages origin whose caches are visible via the shared caches API.
 const APP_SHELL = 'ss-shell-' + VERSION;
@@ -38,7 +38,10 @@ const SHELL_ASSETS = [
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
     const cache = await caches.open(APP_SHELL);
-    await cache.addAll(SHELL_ASSETS);
+    // Fetch shell assets with cache:'reload' so we bypass the browser HTTP cache
+    // (GitHub Pages sends max-age=600). Otherwise a still-fresh stale copy can get
+    // baked into this SW cache and, since SW caches ignore max-age, served forever.
+    await cache.addAll(SHELL_ASSETS.map(u => new Request(u, { cache: 'reload' })));
     await self.skipWaiting();
   })());
 });
