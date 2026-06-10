@@ -169,3 +169,11 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-table col:nth-child(3){width:36px}
 .pf-table .del-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:15px;padding:2px 6px}
 .pf-table .del-btn:hover{color:#ff5c5c}
+/* list sub-tabs */
+.pf-list-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.pf-list-tab{background:var(--panel2);border:1px solid var(--card-border);color:var(--text-dim);padding:5px 14px;border-radius:999px;cursor:pointer;font-size:12px;font-family:inherit;transition:color .15s,border-color .15s}
+.pf-list-tab.active{border-color:var(--accent);color:var(--accent)}
+/* filter input (useful for long lists like Watchlist+) */
+.pf-filter-wrap{margin-bottom:10px}
+.pf-filter-wrap input{width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:14px;font-family:inherit}
+.pf-filter-wrap input:focus{outline:none;border-color:var(--accent)}
