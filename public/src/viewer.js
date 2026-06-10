@@ -22,6 +22,9 @@ const COL = {
 };
 let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infinity, hoverIdx=null;
 
+// Series cache: Map keyed by "<list>|<ticker>|<asof>" → series object
+const seriesCache = new Map();
+
 // Track whether the Charts page is visible (clientWidth/Height == 0 when hidden).
 let chartsVisible = false;
 // Guard resize: only redraw on actual width changes, not URL-bar height jitter.
@@ -58,7 +61,7 @@ const recRank={Buy:3,Hold:2,Sell:1};
 const COLS = [
   ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
   ['Name',     r=>r.name,                  v=>esc(v),               'l'],
-  ['Δ1D',     r=>{ const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
+  ['Δ1D',     r=>{ if(typeof r.s['change_1d']==='number') return r.s['change_1d']; const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
   ['Rule',     r=>r.s['Recommendation_3_1'], v=>badge(v),           'b'],
   ['ML',       r=>r.s['Recommendation_ML'],  v=>badge(v),           'b'],
   ['Hindsight',r=>r.s['Optimal_hindsight'],  v=>badge(v),           'b'],
@@ -100,6 +103,41 @@ function load(json){
 // ---------- server data ----------
 const indexUrl  = () => getActiveBase() + CONFIG.STOCKS_INDEX_PATH;
 const reportUrl = (file) => getActiveBase() + CONFIG.STOCKS_REPORT_PATH + '?file=' + encodeURIComponent(file);
+const seriesUrl = (list, ticker, asof) => {
+  let u = getActiveBase() + CONFIG.STOCKS_SERIES_PATH + '?list=' + encodeURIComponent(list) + '&ticker=' + encodeURIComponent(ticker);
+  if (asof) u += '&asof=' + encodeURIComponent(asof);
+  return u;
+};
+
+/**
+ * ensureSeries(ticker) — fetch the series for a ticker if not already embedded or cached.
+ * Assigns r.series on the ROWS entry and resolves when ready (or rejects on error).
+ * Skips the fetch if the report already has an embedded series (back-compat with old reports).
+ */
+async function ensureSeries(ticker) {
+  const r = ROWS.find(t => t.ticker === ticker);
+  if (!r) return;
+  // Back-compat: if an old report with embedded series is loaded, use it directly
+  if (r.series && Array.isArray(r.series.date) && r.series.date.length > 0) return;
+
+  const list = DATA && DATA.portfolio;
+  if (!list) return;
+  // Use the date part of the generated timestamp as the asof cutoff
+  const asof = DATA.generated ? DATA.generated.slice(0, 10) : null;
+  const cacheKey = `${list}|${ticker}|${asof||''}`;
+
+  if (seriesCache.has(cacheKey)) {
+    r.series = seriesCache.get(cacheKey);
+    return;
+  }
+
+  const data = await apiJson(seriesUrl(list, ticker, asof));
+  const s = data && data.ticker;
+  if (s) {
+    seriesCache.set(cacheKey, s);
+    r.series = s;
+  }
+}
 
 async function apiJson(url){
   const r = await fetch(url, { headers: authHeaders(), cache:'no-store', credentials:'omit' });
@@ -195,33 +233,40 @@ function select(ticker){
     `Rule ${badge(r.s['Recommendation_3_1'])} ML ${badge(r.s['Recommendation_ML'])} Hindsight ${badge(r.s['Optimal_hindsight'])}`;
   renderRanges();
 
-  // Enable/disable candle button depending on OHLC availability
-  const hasOHLC = Array.isArray(r.series && r.series.open) && (r.series.open||[]).length > 0;
-  const btnCandle = $('#btn-candle'), btnLine = $('#btn-line');
-  if (btnCandle) {
-    if (hasOHLC) {
-      btnCandle.disabled = false;
-      btnCandle.removeAttribute('title');
-      // Restore saved chartType preference
-      loadChartPrefs();
-    } else {
-      btnCandle.disabled = true;
-      btnCandle.title = 'OHLC ab nächstem Scan verfügbar';
-      chartType = 'line';
+  // Lazy-load series then draw. ensureSeries is a no-op if already present.
+  ensureSeries(ticker).then(() => {
+    // Enable/disable candle button depending on OHLC availability
+    const hasOHLC = Array.isArray(r.series && r.series.open) && (r.series.open||[]).length > 0;
+    const btnCandle = $('#btn-candle'), btnLine = $('#btn-line');
+    if (btnCandle) {
+      if (hasOHLC) {
+        btnCandle.disabled = false;
+        btnCandle.removeAttribute('title');
+        // Restore saved chartType preference
+        loadChartPrefs();
+      } else {
+        btnCandle.disabled = true;
+        btnCandle.title = 'OHLC ab nächstem Scan verfügbar';
+        chartType = 'line';
+      }
+      // Sync active button state
+      if (chartType === 'candle' && hasOHLC) {
+        btnCandle.classList.add('active');
+        if (btnLine) btnLine.classList.remove('active');
+      } else {
+        if (btnLine) btnLine.classList.add('active');
+        btnCandle.classList.remove('active');
+      }
     }
-    // Sync active button state
-    if (chartType === 'candle' && hasOHLC) {
-      btnCandle.classList.add('active');
-      if (btnLine) btnLine.classList.remove('active');
-    } else {
-      if (btnLine) btnLine.classList.add('active');
-      btnCandle.classList.remove('active');
-    }
-  }
 
-  // Only draw if the charts page is currently visible — a hidden page has
-  // clientWidth==0 which would produce a 1×1 buffer.
-  if(chartsVisible) draw();
+    // Only draw if the charts page is currently visible — a hidden page has
+    // clientWidth==0 which would produce a 1×1 buffer.
+    if(chartsVisible) draw();
+  }).catch(err => {
+    if (CONFIG && CONFIG.APP_VERSION) console.warn('ensureSeries failed:', err.message);
+    // Still attempt to draw with whatever we have (may be empty)
+    if(chartsVisible) draw();
+  });
 }
 function renderRanges(){
   const opts=[['Full',Infinity],['120d',120],['60d',60],['14d',14]];
