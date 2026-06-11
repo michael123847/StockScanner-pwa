@@ -112,6 +112,7 @@ td a:hover{text-decoration:underline}
 .sig-hold      {color:var(--hold);       background:var(--hold-bg)}
 .sig-sell      {color:var(--sell);       background:var(--sell-bg)}
 .sig-strong-sell{color:var(--sell-strong);background:var(--sell-strong-bg)}
+.cons-neutral  {color:#aaa;             background:rgba(255,255,255,.08)}
 /* Regime badge — slightly wider, used in #meta */
 .regime-badge{font-size:11px;padding:2px 9px;cursor:default}
 .hint{color:var(--text-dim);font-size:12px}

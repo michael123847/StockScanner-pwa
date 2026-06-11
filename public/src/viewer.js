@@ -162,10 +162,19 @@ function buildCols(){
     (v) => {
       if(!v || typeof v.score !== 'number') return '—';
       const sign = v.score > 0 ? '+' : '';
-      const warn = v.flag === 'mixed' ? ' <span title="mixed signals">&#x26A0;</span>' : '';
-      return `<span class="num ${v.score>=0?'pos':'neg'}">${sign}${v.score.toFixed(2)}${warn}</span>`;
+      const tooltip = `Consensus ${sign}${v.score.toFixed(2)} (${v.flag})`;
+      if(v.flag === 'mixed') {
+        return `<span class="glyph ax-reference sig-hold" title="${tooltip}">Mixed ⚠</span>`;
+      }
+      let cls, label;
+      if(v.score >= 0.75)       { cls = 'sig-strong-buy';  label = 'Strong Buy'; }
+      else if(v.score >= 0.25)  { cls = 'sig-buy';         label = 'Buy'; }
+      else if(v.score > -0.25)  { cls = 'cons-neutral';    label = 'Neutral'; }
+      else if(v.score > -0.75)  { cls = 'sig-sell';        label = 'Sell'; }
+      else                      { cls = 'sig-strong-sell'; label = 'Strong Sell'; }
+      return `<span class="glyph ax-reference ${cls}" title="${tooltip}">${label}</span>`;
     },
-    'n',
+    'b',
   ];
   const staticAfter = [
     ['Price',    r=>r.s['Current_Price'],     v=>fNum(v,2),            'n'],
