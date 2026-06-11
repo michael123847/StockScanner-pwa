@@ -55,16 +55,135 @@ const isNum = v => typeof v==='number' && isFinite(v);
 const fNum=(v,d=2)=> isNum(v)? v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
 const fPct=v=> isNum(v)? (v*100).toFixed(1)+'%' : '—';
 const fInt=v=> isNum(v)? Math.round(v).toString() : '—';
+// Legacy rank for back-compat; signal polarity now uses signalRank() below.
 const recRank={Buy:3,Hold:2,Sell:1};
 
-// summary-table columns: [label, key-getter, formatter, css-align]
-const COLS = [
+// Signal polarity rank — most-bearish=1 … most-bullish=highest.
+// Covers all four axes; unknown signals default to 0 (sorts last).
+const SIGNAL_RANK = {
+  // reference
+  'Sell':1,'Hold':2,'Buy':3,
+  // defensive
+  'Strong Sell':1,'Reduce':2,/*Hold:2 already*/'Strong Buy':5,
+  // directional
+  'Lev Short':1,'Short':2,'Neutral':3,'Long':4,'Lev Long':5,
+  // tactical
+  'Exit':1,'Wait':2,/*Hold:2*/'Enter':4,
+};
+// defensive 'Buy' = 4 (not in reference 'Buy'=3 — same label, same rank OK)
+SIGNAL_RANK['Buy'] = Math.max(SIGNAL_RANK['Buy']||0, 4);
+// defensive 'Hold' = 3 (keep max)
+SIGNAL_RANK['Hold'] = Math.max(SIGNAL_RANK['Hold']||0, 3);
+// tactical 'Hold' = 3
+// Already set via max above.
+
+function signalRank(signal){ return signal ? (SIGNAL_RANK[signal] || 0) : 0; }
+
+// ---------- schema normalisation ----------
+function normalizeSchema(json){
+  if(json.schema === 2) return json; // already v2 — pass through unchanged
+  // Synthesize v2 shape from flat summary fields
+  json.columns = [
+    {key:'rule', label:'Rule',     axis:'reference', badge:'validated'},
+    {key:'ml',   label:'ML',       axis:'reference', badge:'experimental'},
+    {key:'dp',   label:'Hindsight',axis:'reference'},
+  ];
+  for(const t of (json.tickers||[])){
+    const s = t.summary || {};
+    const panel = {};
+    if(s['Recommendation_3_1'] != null) panel.rule = {signal: s['Recommendation_3_1']};
+    if(s['Recommendation_ML']  != null) panel.ml   = {signal: s['Recommendation_ML']};
+    if(s['Optimal_hindsight']  != null) panel.dp   = {signal: s['Optimal_hindsight']};
+    t.panel = panel;
+    // consensus remains undefined for old reports — renderer shows '—'
+  }
+  return json;
+}
+
+// ---------- glyph renderer ----------
+// Axis colour semantics: bearish → sell ramp, neutral → hold, bullish → buy ramp.
+// Strong/Lev variants use bold shades (--buy-strong / --sell-strong).
+const BEARISH_SIGNALS  = new Set(['Sell','Strong Sell','Reduce','Lev Short','Short','Exit']);
+const NEUTRAL_SIGNALS  = new Set(['Hold','Neutral','Wait']);
+// Everything else is treated bullish.
+
+function signalColorClass(signal){
+  if(!signal) return '';
+  if(BEARISH_SIGNALS.has(signal)){
+    // Extra-strong bearish
+    if(signal==='Strong Sell'||signal==='Lev Short') return 'sig-strong-sell';
+    return 'sig-sell';
+  }
+  if(NEUTRAL_SIGNALS.has(signal)) return 'sig-hold';
+  // bullish
+  if(signal==='Strong Buy'||signal==='Lev Long') return 'sig-strong-buy';
+  return 'sig-buy';
+}
+
+function slugSignal(signal){ return signal.toLowerCase().replace(/\s+/g,'-'); }
+
+function glyph(cell, col){
+  if(!cell || !cell.signal) return '—';
+  const sig    = cell.signal;
+  const axis   = (col && col.axis) || 'reference';
+  const conf   = (typeof cell.conf === 'number') ? cell.conf : null;
+  const colorCls = signalColorClass(sig);
+  const opacity  = conf !== null ? (0.45 + 0.55 * conf).toFixed(3) : '1';
+  const styleAttr = conf !== null ? ` style="opacity:${opacity}"` : '';
+
+  // Badge/paper superscript mark
+  let mark = '';
+  if(col && col.badge === 'experimental') mark = `<sup title="experimental — not yet validated">*</sup>`;
+  else if(col && col.paper)               mark = `<sup title="paper only">&#x1D4AB;</sup>`;
+
+  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>`;
+}
+
+// ---------- dynamic COLS helpers ----------
+// Returns the full column list for a given report (DATA must be set first).
+// Panel columns are injected after Δ1D; Consensus column follows panel columns.
+function buildCols(){
+  const panelCols = DATA && DATA.columns ? DATA.columns : [];
+  const staticBefore = [
+    ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
+    ['Name',     r=>r.name,                  v=>esc(v),               'l'],
+    ['Δ1D',     r=>{ if(typeof r.s['change_1d']==='number') return r.s['change_1d']; const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
+  ];
+  const dynamicPanel = panelCols.map(col => [
+    col.label,
+    r => (r.panel && r.panel[col.key]) ? r.panel[col.key] : null,
+    (cell) => glyph(cell, col),
+    'b',
+    {panelCol: col},  // metadata at index 4 for sortVal
+  ]);
+  const consensusCol = [
+    'Cons.',
+    r => r.consensus || null,
+    (v) => {
+      if(!v || typeof v.score !== 'number') return '—';
+      const sign = v.score > 0 ? '+' : '';
+      const warn = v.flag === 'mixed' ? ' <span title="mixed signals">&#x26A0;</span>' : '';
+      return `<span class="num ${v.score>=0?'pos':'neg'}">${sign}${v.score.toFixed(2)}${warn}</span>`;
+    },
+    'n',
+  ];
+  const staticAfter = [
+    ['Price',    r=>r.s['Current_Price'],     v=>fNum(v,2),            'n'],
+    ['RSI',      r=>r.s['RSI'],               v=>rsiCell(v),           'n'],
+    ['200DMA',   r=>r.s['200DMA'],            v=>fNum(v,2),            'n'],
+    ['↕200',     r=>r.s['above_200DMA'],      v=>fInt(v),              'n'],
+    ['50DMA',    r=>r.s['50DMA'],             v=>fNum(v,2),            'n'],
+    ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
+    ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
+  ];
+  return [...staticBefore, ...dynamicPanel, consensusCol, ...staticAfter];
+}
+
+// COLS is rebuilt each time a report loads; initialised with static fallback.
+let COLS = [
   ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
   ['Name',     r=>r.name,                  v=>esc(v),               'l'],
   ['Δ1D',     r=>{ if(typeof r.s['change_1d']==='number') return r.s['change_1d']; const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
-  ['Rule',     r=>r.s['Recommendation_3_1'], v=>badge(v),           'b'],
-  ['ML',       r=>r.s['Recommendation_ML'],  v=>badge(v),           'b'],
-  ['Hindsight',r=>r.s['Optimal_hindsight'],  v=>badge(v),           'b'],
   ['Price',    r=>r.s['Current_Price'],     v=>fNum(v,2),            'n'],
   ['RSI',      r=>r.s['RSI'],               v=>rsiCell(v),           'n'],
   ['200DMA',   r=>r.s['200DMA'],            v=>fNum(v,2),            'n'],
@@ -91,9 +210,22 @@ export function setViewerError(msg){
 // ---------- loading ----------
 function load(json){
   setViewerError('');
+  normalizeSchema(json);
   DATA=json;
   ROWS = (json.tickers||[]).map(t=>({ ...t, s:t.summary||{} }));
-  $('#meta').innerHTML = `<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(json.generated||'')}`;
+  COLS = buildCols();
+
+  // Regime badge
+  let regimeBadge = '';
+  if(json.regime && json.regime.state){
+    const rg = json.regime;
+    const cls = rg.state==='Risk-On' ? 'sig-buy' : rg.state==='Risk-Off' ? 'sig-sell' : 'sig-hold';
+    const why = Array.isArray(rg.why) ? rg.why.join(' · ') : '';
+    const asof = rg.asof ? ` (${esc(rg.asof)})` : '';
+    regimeBadge = `<span class="glyph regime-badge ${cls}" title="${esc(why)}">${esc(rg.state)}${asof}</span> &nbsp;`;
+  }
+
+  $('#meta').innerHTML = `${regimeBadge}<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(json.generated||'')}`;
   $('#tbl').style.display='';
   renderHead(); renderBody();
   populateChartTicker();
@@ -195,7 +327,15 @@ function renderHead(){
   const th=$('#tbl thead'); th.innerHTML=''; th.appendChild(tr);
 }
 function sortVal(r,key){
-  const col=COLS.find(c=>c[0]===key); let v=col?col[1](r):null;
+  const col=COLS.find(c=>c[0]===key); if(!col) return null;
+  const v = col[1](r);
+  // Panel column: sort by signal polarity rank
+  if(col[4] && col[4].panelCol){
+    return v ? signalRank(v.signal) : 0;
+  }
+  // Consensus column: sort by score
+  if(key==='Cons.' && v && typeof v.score==='number') return v.score;
+  // Legacy string rank (back-compat for any remaining string signals)
   if(typeof v==='string' && recRank[v]) return recRank[v];
   return v;
 }
@@ -229,8 +369,13 @@ function select(ticker){
   const sel=$('#chart-ticker'); if(sel && sel.value!==ticker) sel.value=ticker;
   const r=ROWS.find(t=>t.ticker===ticker); if(!r) return;
   $('#d-name').textContent = r.name;
-  $('#d-sub').innerHTML = `${tickerCell(r)} &nbsp;·&nbsp; ${esc(r.exchange||'')} &nbsp;·&nbsp; `+
-    `Rule ${badge(r.s['Recommendation_3_1'])} ML ${badge(r.s['Recommendation_ML'])} Hindsight ${badge(r.s['Optimal_hindsight'])}`;
+  const panelCols = DATA && DATA.columns ? DATA.columns : [];
+  const panelHtml = panelCols.map(col => {
+    const cell = r.panel && r.panel[col.key];
+    return `${esc(col.label)} ${glyph(cell, col)}`;
+  }).join(' &nbsp;·&nbsp; ');
+  $('#d-sub').innerHTML = `${tickerCell(r)} &nbsp;·&nbsp; ${esc(r.exchange||'')}` +
+    (panelHtml ? ` &nbsp;·&nbsp; ${panelHtml}` : '');
   renderRanges();
 
   // Lazy-load series then draw. ensureSeries is a no-op if already present.

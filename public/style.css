@@ -98,6 +98,22 @@ td a:hover{text-decoration:underline}
 .badge{display:inline-block;min-width:42px;text-align:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px}
 .Buy{color:var(--buy);background:var(--buy-bg)} .Sell{color:var(--sell);background:var(--sell-bg)} .Hold{color:var(--hold);background:var(--hold-bg)}
 .num.neg{color:var(--sell)} .num.pos{color:var(--buy)}
+
+/* ── Glyph pills (data-driven panel columns) ─────────────────────────────── */
+:root{
+  --buy-strong:#1aad57; --buy-strong-bg:#0d2b1a;
+  --sell-strong:#d93535; --sell-strong-bg:#2e0d0d;
+}
+.glyph{display:inline-block;min-width:42px;text-align:center;padding:2px 7px;border-radius:999px;font-weight:600;font-size:12px;white-space:nowrap}
+.glyph sup{font-size:9px;margin-left:2px;opacity:.75;vertical-align:super}
+/* Signal colour classes — shared across all axes */
+.sig-buy       {color:var(--buy);        background:var(--buy-bg)}
+.sig-strong-buy{color:var(--buy-strong); background:var(--buy-strong-bg)}
+.sig-hold      {color:var(--hold);       background:var(--hold-bg)}
+.sig-sell      {color:var(--sell);       background:var(--sell-bg)}
+.sig-strong-sell{color:var(--sell-strong);background:var(--sell-strong-bg)}
+/* Regime badge — slightly wider, used in #meta */
+.regime-badge{font-size:11px;padding:2px 9px;cursor:default}
 .hint{color:var(--text-dim);font-size:12px}
 
 /* ── Charts tab ──────────────────────────────────────────────────────────── */
