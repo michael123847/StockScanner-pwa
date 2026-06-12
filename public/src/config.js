@@ -35,6 +35,7 @@ export const CONFIG = {
   STOCKS_MOVE_PATH:      '/api/stocks/portfolio/move', // POST ?from=X&to=Y
   STOCKS_SEARCH_PATH:    '/api/stocks/search',     // GET ?q=<text>  Yahoo Finance lookup
   STOCKS_SERIES_PATH:    '/api/stocks/series',     // GET ?list=&ticker=&asof=  per-list series store
+  STOCKS_DIGEST_PATH:    '/api/stocks/digest',     // GET → digest_latest.txt as text/plain
 
   // Abort a health check after this long to avoid long waits on unreachable
   // candidates while probeBase() races them.

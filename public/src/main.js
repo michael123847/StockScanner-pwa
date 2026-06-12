@@ -23,10 +23,12 @@ import { initViewer, loadReports, setViewerError } from './viewer.js';
 import { initTabs } from './tabs.js';
 import { initInfo } from './info.js';
 import { initPortfolio } from './portfolio.js';
+import { initDigest } from './digest.js';
 
 const $ = s => document.querySelector(s);
 
-let lastOnline = null; // tracks offline→online transitions for auto-reload
+let lastOnline  = null; // tracks offline→online transitions for auto-reload
+let lastRunning = null; // tracks scan running→done transitions for digest refresh
 
 // ── Status / offline UI ─────────────────────────────────────────────────────
 function setStatusDot(online) {
@@ -43,23 +45,25 @@ function showSetup(show) {
   if (card) card.hidden = !show;
 }
 
-/** Fetches scheduler status and shows "updated / next scan" under the header. */
+/** Fetches scheduler status, updates the status line, and returns { running } or null on error. */
 async function updateStatusLine() {
   const line = $('#status-line');
-  if (!line) return;
+  if (!line) return null;
   try {
     const r = await fetch(getActiveBase() + CONFIG.STOCKS_STATUS_PATH, {
       headers: authHeaders(), cache: 'no-store', credentials: 'omit',
     });
-    if (!r.ok) { line.textContent = ''; return; }
+    if (!r.ok) { line.textContent = ''; return null; }
     const s = await r.json();
     const next = s.nextRun ? new Date(s.nextRun).toLocaleString() : '—';
     const parts = [`Nächster Scan: ${next}`];
     if (s.running) parts.unshift('Scan läuft…');
     else if (s.lastRun) parts.unshift(`Letzter Scan: ${new Date(s.lastRun).toLocaleString()} (exit ${s.lastExit})`);
     line.textContent = parts.join(' · ');
+    return { running: !!s.running };
   } catch {
     line.textContent = '';
+    return null;
   }
 }
 
@@ -112,6 +116,7 @@ function wireSetup() {
   initViewer();
   initInfo();
   initPortfolio();
+  initDigest();
   wireSetup();
 
   await probeBase();
@@ -125,8 +130,16 @@ function wireSetup() {
     invalidateLocal();
     const online = await isLocalAvailable();
     setStatusDot(online);
-    if (online && !lastOnline) refresh();      // offline → online: reload
-    else if (online) updateStatusLine();
+    if (online && !lastOnline) {
+      refresh();                               // offline → online: reload everything
+    } else if (online) {
+      const status = await updateStatusLine();
+      // scan just finished: running flipped true → false → new digest available
+      if (status && lastRunning === true && !status.running) {
+        window.dispatchEvent(new CustomEvent('pwa:scan-done'));
+      }
+      if (status) lastRunning = status.running;
+    }
     lastOnline = online;
   }, 30_000);
 

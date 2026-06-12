@@ -26,6 +26,16 @@
 
 <main class="pages">
 
+  <!-- ── Digest tab ───────────────────────────────────────────────── -->
+  <section id="page-digest" class="page">
+    <div class="digest-toolbar">
+      <button class="info-btn" id="digest-refresh">Aktualisieren</button>
+      <span id="digest-stamp" class="digest-stamp"></span>
+    </div>
+    <div id="digest-error" class="view-error" style="display:none"></div>
+    <pre id="digest-body" class="digest-pre">Digest wird geladen…</pre>
+  </section>
+
   <!-- ── Overview tab ──────────────────────────────────────────────── -->
   <section id="page-overview" class="page active">
     <div class="overview-controls">
@@ -109,6 +119,10 @@
 </main>
 
 <nav class="tab-bar">
+  <button class="tab-btn" data-page="digest">
+    <span class="tab-icon">&#128240;</span>
+    <span>Digest</span>
+  </button>
   <button class="tab-btn active" data-page="overview">
     <span class="tab-icon">&#128203;</span>
     <span>&#220;bersicht</span>
