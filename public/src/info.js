@@ -87,9 +87,26 @@ async function hardReload() {
   location.reload();
 }
 
+function applyScale(v) {
+  const valid = ['extra-klein', 'klein', 'mittel', 'gross', 'extra-gross'];
+  if (!v || !valid.includes(v)) v = 'mittel';
+  if (v === 'mittel') {
+    delete document.documentElement.dataset.scale;
+  } else {
+    document.documentElement.dataset.scale = v;
+  }
+  try { localStorage.setItem('ss.ui.scale', v); } catch { /* storage unavailable */ }
+  const sel = document.getElementById('scale-select');
+  if (sel) sel.value = v;
+}
+
 export function initInfo() {
   if (!document.getElementById('info-content')) return;
 
+  const savedScale = localStorage.getItem('ss.ui.scale') || 'mittel';
+  applyScale(savedScale);
+
+  document.getElementById('scale-select')?.addEventListener('change', e => applyScale(e.target.value));
   document.getElementById('info-refresh')?.addEventListener('click', render);
   document.getElementById('info-reload')?.addEventListener('click', hardReload);
 

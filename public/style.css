@@ -213,3 +213,10 @@ canvas{width:100%;display:block;touch-action:pan-y}
 /* + and ⋯ tab controls */
 .pf-list-add,.pf-list-more{padding:5px 10px;opacity:.6}
 .pf-list-add:hover,.pf-list-more:hover{opacity:1;border-color:var(--accent);color:var(--accent)}
+
+/* ── Display scale ───────────────────────────────────────────────────────── */
+html[data-scale="extra-klein"] body{zoom:0.70}
+html[data-scale="klein"]       body{zoom:0.85}
+html[data-scale="gross"]       body{zoom:1.15}
+html[data-scale="extra-gross"] body{zoom:1.30}
+.scale-select{margin-top:8px;width:100%;padding:10px 12px;background:var(--card);color:var(--text);border:1px solid var(--card-border);border-radius:10px;font-size:.95rem;appearance:auto}

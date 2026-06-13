@@ -14,6 +14,7 @@
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><rect width='180' height='180' fill='%231a1a2e'/><text x='90' y='126' font-size='104' text-anchor='middle'>%F0%9F%93%88</text></svg>">
   <link rel="stylesheet" href="style.css">
   <title>StockScanner</title>
+  <script>try{var s=localStorage.getItem('ss.ui.scale');if(s)document.documentElement.dataset.scale=s;}catch(e){}</script>
 </head>
 <body>
 
@@ -101,6 +102,15 @@
       <button class="info-btn" id="info-refresh">Aktualisieren</button>
       <button class="info-btn info-btn-warn" id="info-reload">Cache leeren &amp; neu laden</button>
     </div>
+
+    <p class="section-label" style="margin-top:26px">Darstellung</p>
+    <select class="scale-select" id="scale-select" aria-label="App-Größe">
+      <option value="extra-klein">Extra Klein</option>
+      <option value="klein">Klein</option>
+      <option value="mittel" selected>Mittel</option>
+      <option value="gross">Gross</option>
+      <option value="extra-gross">Extra Gross</option>
+    </select>
 
     <p class="section-label" style="margin-top:26px">Verbindung</p>
     <div id="setup" class="setup-card" hidden>
