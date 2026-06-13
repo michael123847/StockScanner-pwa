@@ -41,15 +41,18 @@ function toast(msg, ok) {
 function buildTable(entries) {
   const tbl = document.createElement('table');
   tbl.className = 'pf-table';
-  tbl.innerHTML = '<thead><tr><th>Ticker</th><th>Name</th><th></th><th></th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>Ticker</th><th>Name</th><th>Exposure</th><th>Ccy</th><th></th><th></th></tr></thead>';
   const tbody = document.createElement('tbody');
   entries.forEach(e => tbody.appendChild(buildRow(e)));
   tbl.appendChild(tbody);
   return tbl;
 }
 
-function buildRow({ ticker = '', name = '' } = {}) {
+function buildRow({ ticker = '', name = '', exposure = '', currency = '', 'as of': asOf = '' } = {}) {
   const tr = document.createElement('tr');
+  // Store original as-of so collectRows can preserve it when exposure is unchanged
+  tr.dataset.asOf = asOf || '';
+
   ['ticker', 'name'].forEach(field => {
     const td = document.createElement('td');
     td.contentEditable = 'true';
@@ -58,6 +61,37 @@ function buildRow({ ticker = '', name = '' } = {}) {
     td.addEventListener('input', () => { _state[_activeList].dirty = true; });
     tr.appendChild(td);
   });
+
+  // Exposure (numeric text, blank allowed)
+  const expTd = document.createElement('td');
+  const expInput = document.createElement('input');
+  expInput.type = 'text';
+  expInput.inputMode = 'decimal';
+  expInput.className = 'pf-exposure-input';
+  expInput.placeholder = '';
+  const origExp = (exposure != null && exposure !== '') ? String(exposure) : '';
+  expInput.value = origExp;
+  expInput.dataset.field = 'exposure';
+  expInput.dataset.origValue = origExp; // track original to detect edit
+  expInput.addEventListener('input', () => { _state[_activeList].dirty = true; });
+  expTd.appendChild(expInput);
+  tr.appendChild(expTd);
+
+  // Currency (select, blank allowed)
+  const ccyTd = document.createElement('td');
+  const ccySel = document.createElement('select');
+  ccySel.className = 'pf-currency-sel';
+  ccySel.dataset.field = 'currency';
+  ['', 'CHF', 'EUR', 'USD', 'GBP', 'BTC'].forEach(opt => {
+    const o = document.createElement('option');
+    o.value = opt;
+    o.textContent = opt || '—';
+    if(opt === (currency || '')) o.selected = true;
+    ccySel.appendChild(o);
+  });
+  ccySel.addEventListener('change', () => { _state[_activeList].dirty = true; });
+  ccyTd.appendChild(ccySel);
+  tr.appendChild(ccyTd);
 
   // ⇄ move/copy to another list
   const moveTd = document.createElement('td');
@@ -86,10 +120,22 @@ function buildRow({ ticker = '', name = '' } = {}) {
 
 function collectRows() {
   if (!$body) return [];
-  return [...$body.querySelectorAll('.pf-table tbody tr')].map(tr => ({
-    ticker: tr.querySelector('[data-field=ticker]')?.textContent.trim() || '',
-    name:   tr.querySelector('[data-field=name]')?.textContent.trim()   || '',
-  })).filter(e => e.ticker);
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return [...$body.querySelectorAll('.pf-table tbody tr')].map(tr => {
+    const ticker   = tr.querySelector('[data-field=ticker]')?.textContent.trim() || '';
+    const name     = tr.querySelector('[data-field=name]')?.textContent.trim()   || '';
+    const expEl    = tr.querySelector('[data-field=exposure]');
+    const expRaw   = expEl ? expEl.value.trim() : '';
+    const currency = tr.querySelector('[data-field=currency]')?.value || '';
+    const exposure = expRaw !== '' ? expRaw : '';
+    // Stamp as-of today only when exposure was changed; otherwise preserve original
+    let asOf = '';
+    if(exposure !== ''){
+      const origExp = expEl ? (expEl.dataset.origValue || '') : '';
+      asOf = (expRaw !== origExp) ? today : (tr.dataset.asOf || today);
+    }
+    return { ticker, name, exposure, currency, 'as of': asOf };
+  }).filter(e => e.ticker);
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────
@@ -197,7 +243,13 @@ async function load(list) {
     );
     if (r.status === 401) { toast('Token abgelehnt — Info-Tab öffnen.', false); $body.innerHTML = ''; return; }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const entries = await r.json();
+    const entries = (await r.json()).map(e => ({
+      ticker:   e.ticker   || '',
+      name:     e.name     || '',
+      exposure: e.exposure != null ? e.exposure : '',
+      currency: e.currency || '',
+      'as of':  e['as of'] || '',
+    }));
     $body.innerHTML = '';
     $body.appendChild(buildTable(entries));
     _state[list].dirty  = false;

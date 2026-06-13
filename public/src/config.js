@@ -15,7 +15,7 @@
  */
 export const CONFIG = {
   // Bump together with VERSION in sw.js on every deploy.
-  APP_VERSION: 'v1.3.9',
+  APP_VERSION: 'v1.4.0',
 
   // Only the generic mDNS hostname is public; lan_ip + ts come from
   // /api/stocks/config and are cached in localStorage (see siteConfig.js).
@@ -36,6 +36,7 @@ export const CONFIG = {
   STOCKS_SEARCH_PATH:    '/api/stocks/search',     // GET ?q=<text>  Yahoo Finance lookup
   STOCKS_SERIES_PATH:    '/api/stocks/series',     // GET ?list=&ticker=&asof=  per-list series store
   STOCKS_DIGEST_PATH:    '/api/stocks/digest',     // GET → digest_latest.txt as text/plain
+  STOCKS_PORTFOLIO_SERIES_PATH: '/api/stocks/portfolio_series', // GET ?list=<label>
 
   // Abort a health check after this long to avoid long waits on unreachable
   // candidates while probeBase() races them.

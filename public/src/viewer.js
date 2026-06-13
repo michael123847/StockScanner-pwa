@@ -25,6 +25,77 @@ let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infini
 // Series cache: Map keyed by "<list>|<ticker>|<asof>" → series object
 const seriesCache = new Map();
 
+// Perf series cache: Map keyed by list label → perf JSON
+const perfCache = new Map();
+// In-flight perf fetch promise (avoid duplicate requests)
+let _perfFetch = null;
+
+// ---------- currency ----------
+const CURRENCY_KEY = 'pwa.stocks.currency';
+const CURRENCIES = ['CHF','EUR','USD','GBP','BTC'];
+
+function getCurrency(){
+  try { const v = localStorage.getItem(CURRENCY_KEY); if(CURRENCIES.includes(v)) return v; } catch {}
+  return 'CHF';
+}
+function setCurrency(v){
+  try { localStorage.setItem(CURRENCY_KEY, v); } catch {}
+}
+
+/**
+ * Convert a CHF value to the display currency using the report's FX snapshot.
+ * fx = report.fx object { USDCHF, EURCHF, GBPCHF, BTCUSD }.
+ * Returns a formatted string or '—' when conversion is not possible.
+ */
+function convertCHF(valueCHF, currency, fx){
+  if(valueCHF == null || !isNum(valueCHF)) return '—';
+  if(!fx) return currency === 'CHF' ? fNum(valueCHF, 2) + ' CHF' : '—';
+  let result;
+  if(currency === 'CHF'){
+    result = valueCHF;
+  } else if(currency === 'USD'){
+    if(!isNum(fx.USDCHF) || fx.USDCHF === 0) return '—';
+    result = valueCHF / fx.USDCHF;
+  } else if(currency === 'EUR'){
+    if(!isNum(fx.EURCHF) || fx.EURCHF === 0) return '—';
+    result = valueCHF / fx.EURCHF;
+  } else if(currency === 'GBP'){
+    if(!isNum(fx.GBPCHF) || fx.GBPCHF === 0) return '—';
+    result = valueCHF / fx.GBPCHF;
+  } else if(currency === 'BTC'){
+    if(!isNum(fx.BTCUSD) || fx.BTCUSD === 0 || !isNum(fx.USDCHF) || fx.USDCHF === 0) return '—';
+    result = valueCHF / (fx.BTCUSD * fx.USDCHF);
+  } else {
+    return '—';
+  }
+  if(!isNum(result)) return '—';
+  if(currency === 'BTC') return result.toFixed(6) + ' BTC';
+  return fNum(result, 2) + ' ' + currency;
+}
+
+/**
+ * Convert a CHF value using per-date FX arrays (for the perf graph).
+ * fxArrays = { USDCHF:[…], EURCHF:[…], GBPCHF:[…], BTCUSD:[…] }, idx = date index.
+ * Returns a number or null.
+ */
+function convertCHFArr(valueCHF, currency, fxArrays, idx){
+  if(valueCHF == null || !isNum(valueCHF)) return null;
+  if(currency === 'CHF') return valueCHF;
+  const get = (arr) => (arr && isNum(arr[idx])) ? arr[idx] : null;
+  if(currency === 'USD'){
+    const r = get(fxArrays && fxArrays.USDCHF); return (r && r !== 0) ? valueCHF / r : null;
+  } else if(currency === 'EUR'){
+    const r = get(fxArrays && fxArrays.EURCHF); return (r && r !== 0) ? valueCHF / r : null;
+  } else if(currency === 'GBP'){
+    const r = get(fxArrays && fxArrays.GBPCHF); return (r && r !== 0) ? valueCHF / r : null;
+  } else if(currency === 'BTC'){
+    const btcusd = get(fxArrays && fxArrays.BTCUSD);
+    const usdchf = get(fxArrays && fxArrays.USDCHF);
+    return (btcusd && usdchf && btcusd !== 0 && usdchf !== 0) ? valueCHF / (btcusd * usdchf) : null;
+  }
+  return null;
+}
+
 // Track whether the Charts page is visible (clientWidth/Height == 0 when hidden).
 let chartsVisible = false;
 // Guard resize: only redraw on actual width changes, not URL-bar height jitter.
@@ -185,7 +256,18 @@ function buildCols(){
     ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
     ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
   ];
-  return [...staticBefore, ...dynamicPanel, consensusCol, ...staticAfter];
+
+  // Value column — only injected when the report has holdings (fx snapshot present)
+  const hasHoldings = DATA && DATA.fx;
+  const valueCol = hasHoldings ? [
+    'Value',
+    r => (r.holding && isNum(r.holding.value_chf)) ? r.holding.value_chf : null,
+    v => convertCHF(v, getCurrency(), DATA && DATA.fx),
+    'n',
+    {isValue: true},
+  ] : null;
+
+  return [...staticBefore, ...dynamicPanel, consensusCol, ...(valueCol ? [valueCol] : []), ...staticAfter];
 }
 
 // COLS is rebuilt each time a report loads; initialised with static fallback.
@@ -239,6 +321,27 @@ function load(json){
   renderHead(); renderBody();
   populateChartTicker();
   if(ROWS.length) select(ROWS[0].ticker);
+
+  // Show currency selector and perf graph only when the report has holdings
+  const hasFx = !!(json.fx);
+  const currSel = $('#currency-sel');
+  const perfWrap = $('#perf-wrap');
+  if(currSel){
+    if(hasFx){
+      currSel.value = getCurrency();
+      currSel.style.display = '';
+    } else {
+      currSel.style.display = 'none';
+    }
+  }
+  if(perfWrap){
+    if(hasFx){
+      perfWrap.style.display = '';
+      loadPerfAndDraw();
+    } else {
+      perfWrap.style.display = 'none';
+    }
+  }
 }
 
 // ---------- server data ----------
@@ -285,6 +388,71 @@ async function apiJson(url){
   if(r.status === 401){ clearToken(); throw new Error('unauthorized'); }
   if(!r.ok){ invalidateLocal(); throw new Error('HTTP_'+r.status); }
   return r.json();
+}
+
+// ---------- perf graph ----------
+const perfUrl = (list) => getActiveBase() + CONFIG.STOCKS_PORTFOLIO_SERIES_PATH + '?list=' + encodeURIComponent(list);
+
+async function loadPerfAndDraw(){
+  const list = DATA && DATA.portfolio;
+  if(!list || !DATA.fx) return;
+
+  let perf;
+  if(perfCache.has(list)){
+    perf = perfCache.get(list);
+  } else {
+    // Avoid duplicate in-flight fetches
+    if(!_perfFetch){
+      _perfFetch = apiJson(perfUrl(list)).then(p => {
+        perfCache.set(list, p);
+        _perfFetch = null;
+        return p;
+      }).catch(err => {
+        _perfFetch = null;
+        console.warn('perf fetch failed:', err.message);
+        return null;
+      });
+    }
+    perf = await _perfFetch;
+    if(!perf) return;
+  }
+  drawPerf(perf);
+}
+
+function drawPerf(perf){
+  const cv = $('#c-perf');
+  if(!cv) return;
+  if(!perf || !Array.isArray(perf.dates) || !Array.isArray(perf.total)) return;
+
+  const currency = getCurrency();
+  const dates = perf.dates;
+  const yVals = perf.total.map((v, i) => convertCHFArr(v, currency, perf.fx, i));
+
+  const validVals = yVals.filter(v => v !== null && isNum(v));
+  if(!validVals.length) return;
+
+  const [yMin, yMax] = niceBounds(validVals);
+
+  // Y-axis formatter
+  let yfmt;
+  if(currency === 'BTC'){
+    yfmt = v => v.toFixed(4);
+  } else {
+    const mag = Math.abs(yMax);
+    yfmt = mag >= 1e6 ? v => (v/1e6).toFixed(2)+'M' : v => v.toFixed(0);
+  }
+
+  plot({
+    canvas: cv,
+    x: dates,
+    yMin, yMax,
+    yticks: 4,
+    yfmt,
+    series: [{ data: yVals, color: '#4ea1ff', width: 1.8 }],
+  });
+
+  const lgEl = $('#lg-perf');
+  if(lgEl) legend(lgEl, [['#4ea1ff', 'Portfolio (' + currency + ')']]);
 }
 
 /** Loads the report manifest and renders the newest report. */
@@ -627,6 +795,22 @@ function onLeave(){ hoverIdx=null; $('#tip').style.display='none'; draw(); }
 export function initViewer(){
   $('#filter').oninput=renderBody;
 
+  // Currency selector — re-render table and perf graph without refetch
+  const currSel = $('#currency-sel');
+  if(currSel){
+    currSel.value = getCurrency();
+    currSel.addEventListener('change', () => {
+      setCurrency(currSel.value);
+      // Rebuild COLS so Value column header and formatter picks up new currency
+      if(DATA) COLS = buildCols();
+      renderHead();
+      renderBody();
+      // Redraw perf graph using cached data
+      const list = DATA && DATA.portfolio;
+      if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
+    });
+  }
+
   ['c-price','c-rec','c-rsi'].forEach(id=>{ const cv=$('#'+id); if(!cv) return;
     cv.addEventListener('mousemove', onMove);
     cv.addEventListener('mouseleave', onLeave);
@@ -682,6 +866,11 @@ export function initViewer(){
   window.addEventListener('pwa:tab', e=>{
     chartsVisible = e.detail === 'charts';
     if(chartsVisible && selected){ lastW=0; draw(); }
+    // Redraw perf graph when overview tab becomes visible (was hidden → zero clientWidth)
+    if(e.detail === 'overview'){
+      const list = DATA && DATA.portfolio;
+      if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
+    }
   });
 
   // Width-guarded resize: only redraw on actual width changes (not URL-bar jitter).
@@ -689,6 +878,12 @@ export function initViewer(){
   addEventListener('resize', ()=>{
     clearTimeout(rz);
     rz = setTimeout(()=>{
+      // Redraw perf graph on resize (overview tab may be visible)
+      const list = DATA && DATA.portfolio;
+      if(list && perfCache.has(list)){
+        const perfWrap = $('#perf-wrap');
+        if(perfWrap && perfWrap.style.display !== 'none') drawPerf(perfCache.get(list));
+      }
       if(!chartsVisible || !selected) return;
       const w = ($('#c-price')||{}).clientWidth || 0;
       if(w !== lastW){ lastW=w; draw(); }
