@@ -38,7 +38,7 @@ function platformLabel() {
 async function swCacheVersion() {
   try {
     const shell = (await caches.keys()).find(k => k.startsWith('ss-shell-'));
-    return shell ? shell.replace('shell-', '') : '—';
+    return shell ? shell.replace('ss-shell-', '') : '—';
   } catch {
     return '—';
   }

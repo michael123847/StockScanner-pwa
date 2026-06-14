@@ -89,7 +89,7 @@ function convertCHF(valueCHF, currency, fx){
   }
   if(!isNum(result)) return '—';
   if(currency === 'BTC') return fSig(result) + ' BTC';
-  return fSig(result) + ' ' + currency;
+  return fSig(result) + ' ' + currency;
 }
 
 /**
@@ -483,9 +483,9 @@ function drawPerf(perf){
 /** Loads the report manifest and renders the newest report. */
 export async function loadReports(){
   const list = await apiJson(indexUrl());
-  populateReports(list, list && list[0] && list[0].file);
-  if(list && list.length){
-    const data = await apiJson(reportUrl(list[0].file));
+  const file = populateReports(list);
+  if(file){
+    const data = await apiJson(reportUrl(file));
     load(data);
   } else {
     $('#tbl').style.display='none';
@@ -493,17 +493,44 @@ export async function loadReports(){
   }
 }
 
-function populateReports(list, current){
-  const sel=$('#report'); if(!sel) return;
-  if(!list||!list.length){ sel.style.display='none'; return; }
-  // Group reports by list name (optgroup); newest-first order preserved within each.
+function fillDates(groups, listName, dateSel){
+  if(!dateSel) return null;
+  const items=groups.get(listName)||[];
+  dateSel.innerHTML=items.map(e=>
+    `<option value="${esc(e.file)}">${esc((e.generated||'').slice(0,10))}${e.count?` · ${e.count}`:''}</option>`
+  ).join('');
+  dateSel.style.display=items.length?'':'none';
+  return items.length?items[0].file:null; // newest first → index 0 = latest
+}
+
+function populateReports(list){
+  const sel=$('#report');
+  const dateSel=$('#report-date');
+  if(!sel) return null;
+  if(!list||!list.length){
+    sel.style.display='none';
+    if(dateSel) dateSel.style.display='none';
+    return null;
+  }
+  // Group by list name; newest-first order preserved within each group.
   const groups=new Map();
   for(const e of list){ const k=e.portfolio||e.file; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(e); }
-  sel.innerHTML=[...groups].map(([name,items])=>
-    `<optgroup label="${esc(name)}">`+items.map(e=>`<option value="${esc(e.file)}">${esc((e.generated||'').slice(0,10))}${e.count?` · ${e.count}`:''}</option>`).join('')+`</optgroup>`
-  ).join('');
-  sel.value = current || list[0].file; sel.style.display='';
-  sel.onchange=()=>apiJson(reportUrl(sel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
+  // List selector — one option per list
+  sel.innerHTML=[...groups.keys()].map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+  sel.value=groups.has('Portfolio')?'Portfolio':[...groups.keys()][0];
+  sel.style.display='';
+  // Populate date dropdown for the default list; capture file to load
+  const file=fillDates(groups,sel.value,dateSel);
+  // Wire list change: repopulate dates, load latest
+  sel.onchange=()=>{
+    const f=fillDates(groups,sel.value,dateSel);
+    if(f) apiJson(reportUrl(f)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
+  };
+  // Wire date change: load chosen date
+  if(dateSel) dateSel.onchange=()=>{
+    if(dateSel.value) apiJson(reportUrl(dateSel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
+  };
+  return file;
 }
 
 // Populate the chart-ticker <select> in the Charts tab.
@@ -571,9 +598,17 @@ function openRowSheet(ticker){
   const backdrop=document.createElement('div'); backdrop.className='row-sheet-backdrop';
   const sheet=document.createElement('div'); sheet.className='row-sheet';
   const panelCols=DATA&&DATA.columns?DATA.columns:[];
-  const panelHtml=panelCols.map(col=>glyph(r.panel&&r.panel[col.key],col)).join(' ');
   const consColDef=COLS.find(c=>c[0]==='Cons.');
   const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
+  const recsHtml=[
+    ...panelCols.map(col=>{
+      const g=glyph(r.panel&&r.panel[col.key],col);
+      return g==='—'?'':
+        `<div class="rs-metric"><span class="rs-metric-label">${esc(col.label)}</span><span class="rs-metric-value">${g}</span></div>`;
+    }),
+    (consHtml&&consHtml!=='—')?
+      `<div class="rs-metric"><span class="rs-metric-label">Cons.</span><span class="rs-metric-value">${consHtml}</span></div>`:'',
+  ].join('');
   const skipCols=new Set(['Ticker','Name','Cons.']);
   const metricsHtml=COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
@@ -585,7 +620,7 @@ function openRowSheet(ticker){
     </div>
     <div class="row-sheet-section">
       <div class="row-sheet-section-label">Empfehlungen</div>
-      <div class="row-sheet-glyphs">${panelHtml}${consHtml?`<span style="margin-left:4px">${consHtml}</span>`:''}</div>
+      <div class="rs-metrics">${recsHtml}</div>
     </div>
     <div class="row-sheet-section">
       <div class="row-sheet-section-label">Kennzahlen</div>
