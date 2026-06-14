@@ -12,6 +12,7 @@
  */
 import { authHeaders, getActiveBase } from './localBridge.js';
 import { CONFIG } from './config.js';
+import { loadLists as fetchLists } from './lists.js';
 
 const BUILTIN_KEYS = new Set(['Portfolio', 'Watchlist', 'Screenlist_extended']);
 
@@ -98,7 +99,7 @@ function buildRow({ ticker = '', name = '', exposure = '', currency = '', 'as of
 
   const delTd = document.createElement('td');
   const delBtn = document.createElement('button');
-  delBtn.className = 'del-btn';
+  delBtn.className = 'del-btn btn-danger';
   delBtn.textContent = '✕';
   delBtn.title = 'Zeile löschen';
   delBtn.addEventListener('click', () => {
@@ -434,20 +435,7 @@ async function moveCopyTicker(ticker, name, targetKey, copy) {
 
 // ── List management ────────────────────────────────────────────────────────
 async function loadLists() {
-  try {
-    const r = await fetch(
-      getActiveBase() + CONFIG.STOCKS_LISTS_PATH,
-      { headers: authHeaders(), cache: 'no-store', credentials: 'omit' },
-    );
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    LISTS = await r.json();
-  } catch {
-    LISTS = [
-      { key: 'Portfolio',           label: 'Portfolio',  builtin: true },
-      { key: 'Watchlist',           label: 'Watchlist',  builtin: true },
-      { key: 'Screenlist_extended', label: 'Watchlist+', builtin: true },
-    ];
-  }
+  LISTS = await fetchLists();
   for (const l of LISTS) {
     if (!_state[l.key]) _state[l.key] = { loaded: false, dirty: false };
   }
@@ -612,18 +600,48 @@ function buildToolbar() {
   reloadBtn.addEventListener('click', () => load(_activeList));
 
   const runBtn = document.createElement('button');
-  runBtn.className = 'btn'; runBtn.textContent = 'Jetzt scannen';
+  runBtn.className = 'btn btn-primary'; runBtn.textContent = 'Jetzt scannen';
   runBtn.addEventListener('click', runNow);
 
   const exportBtn = document.createElement('button');
   exportBtn.className = 'btn'; exportBtn.textContent = 'Export';
   exportBtn.addEventListener('click', exportList);
 
+  const moreBtn = document.createElement('button');
+  moreBtn.className = 'btn'; moreBtn.textContent = '⋯'; moreBtn.title = 'Weitere Aktionen';
+  moreBtn.addEventListener('click', () => {
+    dismissMenu('pf-more-menu');
+    const menu = document.createElement('div');
+    menu.id = 'pf-more-menu'; menu.className = 'pf-action-sheet';
+
+    const rBtn = document.createElement('button');
+    rBtn.textContent = 'Neu laden';
+    rBtn.addEventListener('click', () => { menu.remove(); load(_activeList); });
+
+    const sBtn = document.createElement('button');
+    sBtn.textContent = 'Jetzt scannen'; sBtn.className = 'btn-primary';
+    sBtn.addEventListener('click', () => { menu.remove(); runNow(); });
+
+    const xBtn = document.createElement('button');
+    xBtn.textContent = 'Export';
+    xBtn.addEventListener('click', () => { menu.remove(); exportList(); });
+
+    menu.appendChild(rBtn); menu.appendChild(sBtn); menu.appendChild(xBtn);
+    const rect = moreBtn.getBoundingClientRect();
+    menu.style.top  = (rect.bottom + 4) + 'px';
+    menu.style.left = Math.max(8, rect.right - 180) + 'px';
+    document.body.appendChild(menu);
+    const outside = ev => {
+      if (!menu.contains(ev.target) && ev.target !== moreBtn) {
+        menu.remove(); document.removeEventListener('click', outside, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', outside, true), 0);
+  });
+
   $toolbar.appendChild(addBtn);
   $toolbar.appendChild(saveBtn);
-  $toolbar.appendChild(reloadBtn);
-  $toolbar.appendChild(runBtn);
-  $toolbar.appendChild(exportBtn);
+  $toolbar.appendChild(moreBtn);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────

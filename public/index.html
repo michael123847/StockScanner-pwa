@@ -35,6 +35,7 @@
     </div>
     <div id="digest-error" class="view-error" style="display:none"></div>
     <pre id="digest-body" class="digest-pre">Digest wird geladen…</pre>
+    <div id="digest-body-md" class="digest-md" style="display:none"></div>
   </section>
 
   <!-- ── Overview tab ──────────────────────────────────────────────── -->
@@ -52,12 +53,11 @@
       </select>
       <select id="table-preset-sel" title="Spalten-Profil" style="display:none">
         <option value="holdings">Holdings</option>
-        <option value="signale">Signale</option>
-        <option value="technik">Technik</option>
+        <option value="chancen">Chancen</option>
       </select>
       <input id="filter" placeholder="Filter…" autocomplete="off">
+      <div id="status-line" class="status-line" style="display:none"></div>
     </div>
-    <div id="status-line" class="status-line"></div>
     <div id="view-error" class="view-error" style="display:none"></div>
     <div class="table-scroll">
       <table id="tbl" style="display:none"><thead></thead><tbody></tbody></table>
@@ -117,7 +117,7 @@
     <div class="info-list" id="info-content"></div>
     <div class="info-actions">
       <button class="info-btn" id="info-refresh">Aktualisieren</button>
-      <button class="info-btn info-btn-warn" id="info-reload">Cache leeren &amp; neu laden</button>
+      <button class="info-btn info-btn-warn btn-danger" id="info-reload">Cache leeren &amp; neu laden</button>
     </div>
 
     <p class="section-label" style="margin-top:26px">Darstellung</p>

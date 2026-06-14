@@ -17,6 +17,7 @@
  */
 import { probeBase, isLocalAvailable, invalidateLocal, getActiveBase, authHeaders } from './localBridge.js';
 import { CONFIG } from './config.js';
+import { fmtDateTime } from './format.js';
 import { getToken, setToken, hasToken } from './auth.js';
 import { refreshConfig } from './siteConfig.js';
 import { initViewer, loadReports, setViewerError } from './viewer.js';
@@ -55,10 +56,10 @@ async function updateStatusLine() {
     });
     if (!r.ok) { line.textContent = ''; return null; }
     const s = await r.json();
-    const next = s.nextRun ? new Date(s.nextRun).toLocaleString() : '—';
+    const next = s.nextRun ? fmtDateTime(s.nextRun) : '—';
     const parts = [`Nächster Scan: ${next}`];
     if (s.running) parts.unshift('Scan läuft…');
-    else if (s.lastRun) parts.unshift(`Letzter Scan: ${new Date(s.lastRun).toLocaleString()} (exit ${s.lastExit})`);
+    else if (s.lastRun) parts.unshift(`Letzter Scan: ${fmtDateTime(s.lastRun)} (exit ${s.lastExit})`);
     line.textContent = parts.join(' · ');
     return { running: !!s.running };
   } catch {

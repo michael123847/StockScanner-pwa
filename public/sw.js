@@ -13,7 +13,7 @@
  *
  * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
  */
-const VERSION   = 'v1.6.1';
+const VERSION   = 'v1.7.0';
 // App-specific prefix avoids cross-contamination with other PWAs on the same
 // GitHub Pages origin whose caches are visible via the shared caches API.
 const APP_SHELL = 'ss-shell-' + VERSION;
@@ -33,6 +33,9 @@ const SHELL_ASSETS = [
   './src/tabs.js',
   './src/info.js',
   './src/portfolio.js',
+  './src/digest.js',
+  './src/format.js',
+  './src/lists.js',
 ];
 
 self.addEventListener('install', e => {

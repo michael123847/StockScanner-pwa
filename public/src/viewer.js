@@ -12,6 +12,8 @@
 import { CONFIG } from './config.js';
 import { getActiveBase, authHeaders, invalidateLocal } from './localBridge.js';
 import { clearToken } from './auth.js';
+import { fmtDate, fmtDateTime } from './format.js';
+import { labelFor, loadLists } from './lists.js';
 
 const $ = s => document.querySelector(s);
 
@@ -46,12 +48,11 @@ function setCurrency(v){
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 const PRESETS = {
   holdings: ['Ticker','Value','Δ1D','Δ21D','Cons.'],
-  signale:  ['Ticker','Rule','ML','Risk-Opt','Cons.'],
-  technik:  ['Ticker','RSI','50DMA','200DMA','Mom14'],
+  chancen:  ['Ticker','Cons.','RSI','Mom14'],
 };
 function getPreset(){
-  try{ const v=localStorage.getItem(TABLE_PRESET_KEY); if(['holdings','signale','technik'].includes(v)) return v; }catch{}
-  return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'signale';
+  try{ const v=localStorage.getItem(TABLE_PRESET_KEY); if(['holdings','chancen'].includes(v)) return v; }catch{}
+  return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
 }
 function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
@@ -324,6 +325,15 @@ export function setViewerError(msg){
   el.style.display = msg ? 'block' : 'none';
 }
 
+// Navigate to Charts and select the ticker if it's in the current report.
+// Returns true on success, false if the ticker is not loaded.
+export function selectTickerIfPresent(sym){
+  if(!ROWS.find(r=>r.ticker===sym)) return false;
+  select(sym);
+  window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'}));
+  return true;
+}
+
 // ---------- loading ----------
 function load(json){
   setViewerError('');
@@ -338,11 +348,11 @@ function load(json){
     const rg = json.regime;
     const cls = rg.state==='Risk-On' ? 'sig-buy' : rg.state==='Risk-Off' ? 'sig-sell' : 'sig-hold';
     const why = Array.isArray(rg.why) ? rg.why.join(' · ') : '';
-    const asof = rg.asof ? ` (${esc(rg.asof)})` : '';
+    const asof = rg.asof ? ` (${esc(fmtDate(rg.asof))})` : '';
     regimeBadge = `<span class="glyph regime-badge ${cls}" title="${esc(why)}">${esc(rg.state)}${asof}</span> &nbsp;`;
   }
 
-  $('#meta').innerHTML = `${regimeBadge}<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(json.generated||'')}`;
+  $('#meta').innerHTML = `${regimeBadge}<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(fmtDateTime(json.generated||''))}`;
   renderOverview();
   populateChartTicker();
   if(ROWS.length) select(ROWS[0].ticker);
@@ -482,6 +492,7 @@ function drawPerf(perf){
 
 /** Loads the report manifest and renders the newest report. */
 export async function loadReports(){
+  await loadLists();
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
   if(file){
@@ -497,7 +508,7 @@ function fillDates(groups, listName, dateSel){
   if(!dateSel) return null;
   const items=groups.get(listName)||[];
   dateSel.innerHTML=items.map(e=>
-    `<option value="${esc(e.file)}">${esc((e.generated||'').slice(0,10))}${e.count?` · ${e.count}`:''}</option>`
+    `<option value="${esc(e.file)}">${esc(fmtDate(e.generated||''))}${e.count?` · ${e.count}`:''}</option>`
   ).join('');
   dateSel.style.display=items.length?'':'none';
   return items.length?items[0].file:null; // newest first → index 0 = latest
@@ -516,7 +527,7 @@ function populateReports(list){
   const groups=new Map();
   for(const e of list){ const k=e.portfolio||e.file; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(e); }
   // List selector — one option per list
-  sel.innerHTML=[...groups.keys()].map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+  sel.innerHTML=[...groups.keys()].map(name=>`<option value="${esc(name)}">${esc(labelFor(name))}</option>`).join('');
   sel.value=groups.has('Portfolio')?'Portfolio':[...groups.keys()][0];
   sel.style.display='';
   // Populate date dropdown for the default list; capture file to load
@@ -592,6 +603,24 @@ function renderBody(cols,rowOnClick){
 
 // ---------- variant renderers ----------
 
+const EXPLAIN = {
+  'Rule':      'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
+  'ML':        'Machine-Learning-Modell (Random Forest). ∗ = experimentell, noch nicht gegen Buy-and-Hold validiert.',
+  'Hindsight': 'Rückblick-Optimum: markiert im Nachhinein die besten Kauf-/Verkaufszeitpunkte — Benchmark, kein handelbares Signal.',
+  'Risk-Opt':  'Risikoadaptierter Recommender: handelt nur in Risk-On-Regimen; bei Risk-Off stumm (Hold).',
+  'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
+  'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
+  'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
+  'Δ21D':     '21-Tage-Rendite: Kursänderung über ~1 Monat in %.',
+  'Mom14':    'Momentum (14 Handelstage): prozentuale Kursänderung der letzten zwei Wochen.',
+  'RSI':       'Relative Strength Index (14 Tage). >70 = überkauft, <30 = überverkauft.',
+  'Price':     'Aktueller Schlusskurs.',
+  '200DMA':   '200-Tage-Durchschnittskurs. Langfristiger Trendindikator.',
+  '50DMA':    '50-Tage-Durchschnittskurs. Mittelfristiger Trendindikator.',
+  '↕200':     'Abstand zum 200DMA in %. Positiv = Kurs liegt über dem Langfristdurchschnitt.',
+  'Value':     'Portfoliowert in der gewählten Währung (Bestand × aktueller Kurs, umgerechnet).',
+};
+
 function openRowSheet(ticker){
   const r=ROWS.find(t=>t.ticker===ticker); if(!r) return;
   document.querySelectorAll('.row-sheet-backdrop,.row-sheet').forEach(el=>el.remove());
@@ -617,6 +646,7 @@ function openRowSheet(ticker){
     <div class="row-sheet-header">
       <div class="row-sheet-title">${tickerCell(r)}</div>
       <div class="row-sheet-sub">${esc(r.name)}&nbsp;&middot;&nbsp;${esc(r.exchange||'')}</div>
+      <div class="row-sheet-hint">ⓘ doppeltippen für Erklärung</div>
     </div>
     <div class="row-sheet-section">
       <div class="row-sheet-section-label">Empfehlungen</div>
@@ -626,13 +656,30 @@ function openRowSheet(ticker){
       <div class="row-sheet-section-label">Kennzahlen</div>
       <div class="rs-metrics">${metricsHtml}</div>
     </div>
-    <button class="btn row-sheet-chart-btn">&rarr; Chart</button>
+    <button class="btn btn-primary row-sheet-chart-btn">&rarr; Chart</button>
   </div>`;
   document.body.appendChild(backdrop); document.body.appendChild(sheet);
   const close=()=>{backdrop.remove();sheet.remove();};
   backdrop.addEventListener('click',close);
   sheet.querySelector('.row-sheet-chart-btn').addEventListener('click',()=>{
     close(); select(ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'}));
+  });
+  sheet.querySelectorAll('.rs-metric').forEach(tile=>{
+    tile.addEventListener('dblclick',e=>{
+      e.stopPropagation();
+      const key=(tile.querySelector('.rs-metric-label')||{}).textContent||'';
+      const text=EXPLAIN[key]; if(!text) return;
+      document.getElementById('rs-explain-popup')?.remove();
+      const popup=document.createElement('div');
+      popup.id='rs-explain-popup'; popup.className='rs-explain-popup';
+      popup.textContent=text;
+      const rect=tile.getBoundingClientRect();
+      popup.style.top=(rect.bottom+4)+'px';
+      popup.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-244))+'px';
+      document.body.appendChild(popup);
+      const dismiss=ev=>{ if(!popup.contains(ev.target)){popup.remove();document.removeEventListener('click',dismiss,true);} };
+      setTimeout(()=>document.addEventListener('click',dismiss,true),0);
+    });
   });
 }
 
@@ -841,10 +888,11 @@ function draw(){
   if (show50 && S.ma50) { overlaySeries.push({data:fillSteps(S.ma50),color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
   if (show200 && S.ma200) { overlaySeries.push({data:fillSteps(S.ma200),color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
   if (showFib) {
-    if (S.fib_236) { overlaySeries.push({data:fillSteps(S.fib_236),color:COL.fib[0],width:1,dash:[5,4]}); legendItems.push([COL.fib[0],'Fib 23.6%',1]); }
-    if (S.fib_382) { overlaySeries.push({data:fillSteps(S.fib_382),color:COL.fib[1],width:1,dash:[5,4]}); legendItems.push([COL.fib[1],'38.2%',1]); }
-    if (S.fib_618) { overlaySeries.push({data:fillSteps(S.fib_618),color:COL.fib[2],width:1,dash:[5,4]}); legendItems.push([COL.fib[2],'61.8%',1]); }
-    if (S.fib_764) { overlaySeries.push({data:fillSteps(S.fib_764),color:COL.fib[3],width:1,dash:[5,4]}); legendItems.push([COL.fib[3],'76.4%',1]); }
+    let _fibLeg = false;
+    if (S.fib_236) { overlaySeries.push({data:fillSteps(S.fib_236),color:COL.fib[0],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[0],'Fib',1]); _fibLeg=true; } }
+    if (S.fib_382) overlaySeries.push({data:fillSteps(S.fib_382),color:COL.fib[1],width:1,dash:[5,4]});
+    if (S.fib_618) overlaySeries.push({data:fillSteps(S.fib_618),color:COL.fib[2],width:1,dash:[5,4]});
+    if (S.fib_764) overlaySeries.push({data:fillSteps(S.fib_764),color:COL.fib[3],width:1,dash:[5,4]});
   }
 
   if (useCandle) {
@@ -1019,6 +1067,17 @@ export function initViewer(){
   window.matchMedia('(orientation: portrait)').addEventListener('change',()=>{ if(DATA) renderOverview(); });
   const presetSel=$('#table-preset-sel');
   if(presetSel) presetSel.addEventListener('change',()=>{ setPreset(presetSel.value); if(DATA) renderOverview(); });
+
+  // Tap #meta to reveal/hide the scan timestamp detail line
+  const metaEl = $('#meta'), statusEl = $('#status-line');
+  if(metaEl && statusEl){
+    metaEl.style.cursor = 'pointer';
+    metaEl.title = 'Scan-Zeiten einblenden';
+    metaEl.addEventListener('click', ()=>{
+      const shown = statusEl.style.display !== 'none';
+      statusEl.style.display = shown ? 'none' : '';
+    });
+  }
 
   // Width-guarded resize: only redraw on actual width changes (not URL-bar jitter).
   let rz;
