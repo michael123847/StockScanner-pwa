@@ -243,13 +243,16 @@ async function load(list) {
     );
     if (r.status === 401) { toast('Token abgelehnt — Info-Tab öffnen.', false); $body.innerHTML = ''; return; }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const entries = (await r.json()).map(e => ({
-      ticker:   e.ticker   || '',
-      name:     e.name     || '',
-      exposure: e.exposure != null ? e.exposure : '',
-      currency: e.currency || '',
-      'as of':  e['as of'] || '',
-    }));
+    // Normalize keys to lowercase so CSV rows with capitalized headers
+    // (Ticker, Name, Exposure, Currency, as of) map correctly to buildRow.
+    const _lc = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]));
+    const entries = (await r.json()).map(e => { const n = _lc(e); return {
+      ticker:   n.ticker   || '',
+      name:     n.name     || '',
+      exposure: n.exposure != null ? n.exposure : '',
+      currency: n.currency || '',
+      'as of':  n['as of'] || '',
+    }; });
     $body.innerHTML = '';
     $body.appendChild(buildTable(entries));
     _state[list].dirty  = false;
