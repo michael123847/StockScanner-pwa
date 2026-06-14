@@ -695,21 +695,22 @@ function draw(){
   // --- Price chart ---
   const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
 
-  // Build overlay series (MA + Fib) respecting checkbox state
+  // Build overlay series (MA) and Fib hlines respecting checkbox state
   const overlaySeries = [];
   const legendItems = [];
+  const fibHlines = [];
   if (show50 && S.ma50) { overlaySeries.push({data:S.ma50,color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
   if (show200 && S.ma200) { overlaySeries.push({data:S.ma200,color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
   if (showFib) {
-    if (S.fib_236) { overlaySeries.push({data:S.fib_236,color:COL.fib[0],width:1,dash:[5,4]}); legendItems.push([COL.fib[0],'Fib 23.6%',1]); }
-    if (S.fib_382) { overlaySeries.push({data:S.fib_382,color:COL.fib[1],width:1,dash:[5,4]}); legendItems.push([COL.fib[1],'38.2%',1]); }
-    if (S.fib_618) { overlaySeries.push({data:S.fib_618,color:COL.fib[2],width:1,dash:[5,4]}); legendItems.push([COL.fib[2],'61.8%',1]); }
-    if (S.fib_764) { overlaySeries.push({data:S.fib_764,color:COL.fib[3],width:1,dash:[5,4]}); legendItems.push([COL.fib[3],'76.4%',1]); }
+    // Fib levels as full-width horizontal lines using last known value from each series
+    const lastNum = a => { if(!a) return null; for(let i=a.length-1;i>=0;i--) if(isNum(a[i])) return a[i]; return null; };
+    [[S.fib_236,COL.fib[0],'Fib 23.6%'],[S.fib_382,COL.fib[1],'38.2%'],[S.fib_618,COL.fib[2],'61.8%'],[S.fib_764,COL.fib[3],'76.4%']]
+      .forEach(([arr,c,lbl]) => { const v=lastNum(arr); if(v!==null){fibHlines.push({y:v,color:c}); legendItems.push([c,lbl,1]);} });
   }
 
   if (useCandle) {
-    // Y-bounds from high/low + overlays
-    const overlayVals = overlaySeries.flatMap(s => s.data || []);
+    // Y-bounds from high/low + overlays + fib levels
+    const overlayVals = [...overlaySeries.flatMap(s => s.data || []), ...fibHlines.map(h=>h.y)];
     const [yMin, yMax] = niceBounds([].concat(S.high||[], S.low||[], overlayVals));
     const candles = (S.open).map((o,i) => ({o, h:S.high[i], l:S.low[i], c:S.close[i]}));
     charts.price = plot({
@@ -717,15 +718,17 @@ function draw(){
       yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
       candles,
       series: overlaySeries,
+      hlines: fibHlines,
     });
     legend($('#lg-price'), [['#4dff88','Kerzen (Kauf)'],['#ff4d4d','Kerzen (Verk.)'], ...legendItems]);
   } else {
     // Line mode
-    const [yMin, yMax] = niceBounds([].concat(S.close||[], S.ma200||[], S.fib_764||[], S.fib_236||[]));
+    const [yMin, yMax] = niceBounds([].concat(S.close||[], S.ma200||[], fibHlines.map(h=>h.y)));
     charts.price = plot({
       canvas: $('#c-price'), x: S.date, yMin, yMax,
       yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
       series: [{data:S.close,color:COL.close,width:2}, ...overlaySeries],
+      hlines: fibHlines,
     });
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
   }

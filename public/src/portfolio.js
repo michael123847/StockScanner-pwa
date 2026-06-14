@@ -62,35 +62,28 @@ function buildRow({ ticker = '', name = '', exposure = '', currency = '', 'as of
     tr.appendChild(td);
   });
 
-  // Exposure (numeric text, blank allowed)
+  // Exposure — shown as label; double-click opens edit popup
   const expTd = document.createElement('td');
-  const expInput = document.createElement('input');
-  expInput.type = 'text';
-  expInput.inputMode = 'decimal';
-  expInput.className = 'pf-exposure-input';
-  expInput.placeholder = '';
+  expTd.className = 'pf-edit-cell';
+  expTd.title = 'Doppelklick zum Bearbeiten';
+  const expSpan = document.createElement('span');
+  expSpan.dataset.field = 'exposure';
   const origExp = (exposure != null && exposure !== '') ? String(exposure) : '';
-  expInput.value = origExp;
-  expInput.dataset.field = 'exposure';
-  expInput.dataset.origValue = origExp; // track original to detect edit
-  expInput.addEventListener('input', () => { _state[_activeList].dirty = true; });
-  expTd.appendChild(expInput);
+  expSpan.textContent = origExp;
+  expSpan.dataset.origValue = origExp;
+  expTd.appendChild(expSpan);
+  expTd.addEventListener('dblclick', () => showEditPopup(tr));
   tr.appendChild(expTd);
 
-  // Currency (select, blank allowed)
+  // Currency — shown as label; double-click opens edit popup
   const ccyTd = document.createElement('td');
-  const ccySel = document.createElement('select');
-  ccySel.className = 'pf-currency-sel';
-  ccySel.dataset.field = 'currency';
-  ['', 'CHF', 'EUR', 'USD', 'GBP', 'BTC'].forEach(opt => {
-    const o = document.createElement('option');
-    o.value = opt;
-    o.textContent = opt || '—';
-    if(opt === (currency || '')) o.selected = true;
-    ccySel.appendChild(o);
-  });
-  ccySel.addEventListener('change', () => { _state[_activeList].dirty = true; });
-  ccyTd.appendChild(ccySel);
+  ccyTd.className = 'pf-edit-cell';
+  ccyTd.title = 'Doppelklick zum Bearbeiten';
+  const ccySpan = document.createElement('span');
+  ccySpan.dataset.field = 'currency';
+  ccySpan.textContent = currency || '';
+  ccyTd.appendChild(ccySpan);
+  ccyTd.addEventListener('dblclick', () => showEditPopup(tr));
   tr.appendChild(ccyTd);
 
   // ⇄ move/copy to another list
@@ -118,6 +111,69 @@ function buildRow({ ticker = '', name = '', exposure = '', currency = '', 'as of
   return tr;
 }
 
+function showEditPopup(tr) {
+  const old = document.getElementById('pf-edit-popup');
+  if (old) old.remove();
+
+  const expSpan = tr.querySelector('[data-field=exposure]');
+  const ccySpan = tr.querySelector('[data-field=currency]');
+
+  const popup = document.createElement('div');
+  popup.id = 'pf-edit-popup';
+
+  const expLabel = document.createElement('label');
+  expLabel.textContent = 'Exposure';
+  const expInput = document.createElement('input');
+  expInput.type = 'text'; expInput.inputMode = 'decimal';
+  expInput.value = expSpan ? expSpan.textContent : '';
+  expLabel.appendChild(expInput);
+
+  const ccyLabel = document.createElement('label');
+  ccyLabel.textContent = 'Währung';
+  const ccySel = document.createElement('select');
+  const currentCcy = ccySpan ? ccySpan.textContent : '';
+  ['', 'CHF', 'EUR', 'USD', 'GBP', 'BTC'].forEach(opt => {
+    const o = document.createElement('option');
+    o.value = opt; o.textContent = opt || '—';
+    if (opt === currentCcy) o.selected = true;
+    ccySel.appendChild(o);
+  });
+  ccyLabel.appendChild(ccySel);
+
+  const btns = document.createElement('div');
+  btns.className = 'pf-ep-btns';
+  const okBtn = document.createElement('button'); okBtn.textContent = 'OK'; okBtn.type = 'button';
+  const cancelBtn = document.createElement('button'); cancelBtn.textContent = '✕'; cancelBtn.type = 'button';
+  btns.appendChild(okBtn); btns.appendChild(cancelBtn);
+
+  popup.appendChild(expLabel); popup.appendChild(ccyLabel); popup.appendChild(btns);
+
+  const rect = tr.getBoundingClientRect();
+  popup.style.position = 'fixed';
+  popup.style.top = (rect.bottom + 4) + 'px';
+  popup.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 220)) + 'px';
+  document.body.appendChild(popup);
+  expInput.focus(); expInput.select();
+
+  function confirm() {
+    if (expSpan) {
+      const newVal = expInput.value.trim();
+      if (newVal !== (expSpan.dataset.origValue || '')) expSpan.dataset.changed = '1';
+      expSpan.textContent = newVal;
+    }
+    if (ccySpan) ccySpan.textContent = ccySel.value;
+    _state[_activeList].dirty = true;
+    cleanup();
+  }
+  function cleanup() { popup.remove(); document.removeEventListener('click', outsideHandler); }
+  function outsideHandler(e) { if (!popup.contains(e.target)) cleanup(); }
+
+  okBtn.addEventListener('click', confirm);
+  cancelBtn.addEventListener('click', cleanup);
+  expInput.addEventListener('keydown', e => { if(e.key==='Enter') confirm(); if(e.key==='Escape') cleanup(); });
+  setTimeout(() => document.addEventListener('click', outsideHandler), 0);
+}
+
 function collectRows() {
   if (!$body) return [];
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -125,14 +181,13 @@ function collectRows() {
     const ticker   = tr.querySelector('[data-field=ticker]')?.textContent.trim() || '';
     const name     = tr.querySelector('[data-field=name]')?.textContent.trim()   || '';
     const expEl    = tr.querySelector('[data-field=exposure]');
-    const expRaw   = expEl ? expEl.value.trim() : '';
-    const currency = tr.querySelector('[data-field=currency]')?.value || '';
+    const expRaw   = expEl ? expEl.textContent.trim() : '';
+    const currency = tr.querySelector('[data-field=currency]')?.textContent.trim() || '';
     const exposure = expRaw !== '' ? expRaw : '';
-    // Stamp as-of today only when exposure was changed; otherwise preserve original
+    // Stamp as-of today only when exposure was changed via popup; otherwise preserve original
     let asOf = '';
     if(exposure !== ''){
-      const origExp = expEl ? (expEl.dataset.origValue || '') : '';
-      asOf = (expRaw !== origExp) ? today : (tr.dataset.asOf || today);
+      asOf = (expEl && expEl.dataset.changed) ? today : (tr.dataset.asOf || today);
     }
     return { ticker, name, exposure, currency, 'as of': asOf };
   }).filter(e => e.ticker);
