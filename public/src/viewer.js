@@ -672,7 +672,9 @@ function plot(cfg){
   for(const hl of (cfg.hlines||[])){ const y=yAt(hl.y); ctx.strokeStyle=hl.color||'#555'; ctx.setLineDash([4,4]);
     ctx.beginPath(); ctx.moveTo(PL,y); ctx.lineTo(w-PR,y); ctx.stroke(); ctx.setLineDash([]); }
   ctx.fillStyle='#8a93a2'; ctx.textAlign='center';
-  const step=Math.max(1,Math.floor(n/6));
+  const LBL_PX=56;
+  const maxLabels=Math.max(2,Math.floor(plotW/LBL_PX));
+  const step=Math.max(1,Math.ceil(n/maxLabels));
   for(let i=0;i<n;i+=step){ ctx.fillText((cfg.x[i]||'').slice(2), xAt(i), h-PB+11); }
   for(const s of cfg.series){ if(!s.data) continue; ctx.strokeStyle=s.color; ctx.lineWidth=s.width||1.6;
     ctx.setLineDash(s.dash||[]); ctx.beginPath(); let pen=false;

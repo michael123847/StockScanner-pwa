@@ -193,9 +193,15 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}
 .pf-table td[contenteditable]{outline:none;cursor:text}
 .pf-table td[contenteditable]:focus{background:rgba(255,255,255,.05);border-radius:4px}
-.pf-table col:nth-child(1){width:100px}
-.pf-table col:nth-child(2){width:auto}
-.pf-table col:nth-child(3){width:36px}
+/* 6-column widths: Ticker | Name | Exposure | Ccy | ⇄ | ✕ */
+.pf-table th:nth-child(1),.pf-table td:nth-child(1){width:76px}
+.pf-table th:nth-child(2),.pf-table td:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pf-table th:nth-child(3),.pf-table td:nth-child(3){width:72px}
+.pf-table th:nth-child(4),.pf-table td:nth-child(4){width:62px}
+.pf-table th:nth-child(5),.pf-table td:nth-child(5){width:30px;text-align:center}
+.pf-table th:nth-child(6),.pf-table td:nth-child(6){width:30px;text-align:center}
+.pf-table .pf-exposure-input,.pf-table .pf-currency-sel{width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);border-radius:6px;padding:4px 6px;font-family:inherit}
+.pf-table .pf-exposure-input{font-size:16px}
 .pf-table .del-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:15px;padding:2px 6px}
 .pf-table .del-btn:hover{color:#ff5c5c}
 /* list sub-tabs */
