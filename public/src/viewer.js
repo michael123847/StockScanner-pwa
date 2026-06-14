@@ -54,6 +54,11 @@ function getPreset(){
   return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'signale';
 }
 function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
+const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
+function getTableVariant(){
+  try{ const v=localStorage.getItem(TABLE_VARIANT_KEY); if(['auto','classic','compact'].includes(v)) return v; }catch{}
+  return 'auto';
+}
 const isPortrait=()=>window.matchMedia('(orientation: portrait)').matches;
 
 /**
@@ -597,21 +602,30 @@ function openRowSheet(ticker){
 }
 
 
-function renderOverview(){
-  const portrait=isPortrait();
+function renderClassic(){
   const presetSel=$('#table-preset-sel');
   const tbl=$('#tbl');
   if(tbl) tbl.style.display='';
-  if(portrait){
-    if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
-    const presetCols=applyPresetCols();
-    renderHead(presetCols);
-    renderBody(presetCols,r=>openRowSheet(r.ticker));
-  } else {
-    if(presetSel) presetSel.style.display='none';
-    renderHead(COLS);
-    renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
-  }
+  if(presetSel) presetSel.style.display='none';
+  renderHead(COLS);
+  renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
+}
+
+function renderCompact(){
+  const presetSel=$('#table-preset-sel');
+  const tbl=$('#tbl');
+  if(tbl) tbl.style.display='';
+  if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
+  const presetCols=applyPresetCols();
+  renderHead(presetCols);
+  renderBody(presetCols,r=>openRowSheet(r.ticker));
+}
+
+function renderOverview(){
+  const v=getTableVariant();
+  if(v==='auto') isPortrait()?renderCompact():renderClassic();
+  else if(v==='compact') renderCompact();
+  else renderClassic();
 }
 
 // ---------- detail ----------
@@ -966,6 +980,7 @@ export function initViewer(){
     }
   });
 
+  window.addEventListener('pwa:table-variant', ()=>{ if(DATA) renderOverview(); });
   window.matchMedia('(orientation: portrait)').addEventListener('change',()=>{ if(DATA) renderOverview(); });
   const presetSel=$('#table-preset-sel');
   if(presetSel) presetSel.addEventListener('change',()=>{ setPreset(presetSel.value); if(DATA) renderOverview(); });

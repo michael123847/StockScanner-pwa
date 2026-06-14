@@ -120,7 +120,13 @@
     </div>
 
     <p class="section-label" style="margin-top:26px">Darstellung</p>
-    <select class="scale-select" id="scale-select" aria-label="App-Größe">
+    <select class="scale-select" id="table-variant-sel" aria-label="Übersicht-Layout">
+      <option value="auto" selected>Automatisch (Ausrichtung)</option>
+      <option value="classic">Klassisch</option>
+      <option value="compact">Kompakt</option>
+    </select>
+    <p class="hint" style="margin-top:6px">Auto folgt der Bildschirm-Ausrichtung; manuell überschreibbar.</p>
+    <select class="scale-select" id="scale-select" aria-label="App-Größe" style="margin-top:12px">
       <option value="extra-klein">Extra Klein</option>
       <option value="klein">Klein</option>
       <option value="mittel" selected>Mittel</option>
