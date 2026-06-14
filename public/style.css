@@ -79,7 +79,16 @@ select#report{background:var(--panel2);border:1px solid var(--card-border);color
 .view-error{margin:8px 0 0;color:var(--sell);font-size:13px}
 
 /* ── Summary table ───────────────────────────────────────────────────────── */
-.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;
+  background:
+    linear-gradient(to right,var(--bg) 20px,transparent 20px),
+    linear-gradient(to left, var(--bg) 20px,transparent 20px),
+    linear-gradient(to right,rgba(0,0,0,.30),transparent 20px),
+    linear-gradient(to left, rgba(77,136,255,.08),transparent 20px);
+  background-size:20px 100%,20px 100%,20px 100%,20px 100%;
+  background-position:left,right,left,right;
+  background-attachment:local,local,scroll,scroll;
+  background-repeat:no-repeat}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{padding:5px 8px;border-bottom:1px solid var(--card-border);text-align:right;white-space:nowrap}
 th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
@@ -227,6 +236,40 @@ canvas{width:100%;display:block;touch-action:pan-y}
 /* + and ⋯ tab controls */
 .pf-list-add,.pf-list-more{padding:5px 10px;opacity:.6}
 .pf-list-add:hover,.pf-list-more:hover{opacity:1;border-color:var(--accent);color:var(--accent)}
+
+/* ── Preset ticker subtitle ──────────────────────────────────────────────── */
+.cell-sub{font-size:11px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+
+/* ── Row detail bottom-sheet (Compact / Cards) ───────────────────────────── */
+.row-sheet-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:300}
+.row-sheet{position:fixed;bottom:0;left:0;right:0;z-index:301;padding-bottom:env(safe-area-inset-bottom,0px)}
+.row-sheet-panel{background:var(--card);border:1px solid var(--card-border);border-radius:18px 18px 0 0;
+  max-height:70vh;overflow-y:auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+.row-sheet-header{margin-bottom:12px}
+.row-sheet-title{font-size:15px;font-weight:700}
+.row-sheet-sub{font-size:12.5px;color:var(--text-dim);margin-top:2px}
+.row-sheet-section{margin-bottom:12px}
+.row-sheet-section-label{font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px}
+.row-sheet-glyphs{display:flex;flex-wrap:wrap;gap:4px}
+.rs-metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px}
+.rs-metric{background:var(--panel2);border:1px solid var(--card-border);border-radius:7px;padding:6px 8px}
+.rs-metric-label{display:block;font-size:.68rem;color:var(--text-dim);margin-bottom:2px}
+.rs-metric-value{font-size:13px;font-weight:600}
+.row-sheet-chart-btn{width:100%;margin-top:12px;padding:10px;font-size:.9rem}
+
+/* ── Cards variant ───────────────────────────────────────────────────────── */
+#cards-wrap{display:flex;flex-direction:column;gap:8px}
+.ov-card{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:12px;cursor:pointer;transition:background .15s}
+.ov-card:hover{background:rgba(255,255,255,.10)}
+.ov-card-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.ov-card-ticker{font-size:14px;font-weight:700}
+.ov-card-name{font-size:12px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ov-card-metrics{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.ov-card-chip{background:rgba(255,255,255,.05);border-radius:6px;padding:4px 8px;font-size:12px;
+  display:flex;flex-direction:column;align-items:center;min-width:52px}
+.ov-card-chip-label{font-size:10px;color:var(--text-dim);margin-bottom:1px}
+.ov-card-glyphs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+.ov-spark{width:100%;height:36px;display:block}
 
 /* ── Display scale ───────────────────────────────────────────────────────── */
 html[data-scale="extra-klein"] body{zoom:0.70}

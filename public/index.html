@@ -49,6 +49,11 @@
         <option value="GBP">GBP</option>
         <option value="BTC">BTC</option>
       </select>
+      <select id="table-preset-sel" title="Spalten-Profil" style="display:none">
+        <option value="holdings">Holdings</option>
+        <option value="signale">Signale</option>
+        <option value="technik">Technik</option>
+      </select>
       <input id="filter" placeholder="Filter…" autocomplete="off">
     </div>
     <div id="status-line" class="status-line"></div>
@@ -122,6 +127,14 @@
       <option value="gross">Gross</option>
       <option value="extra-gross">Extra Gross</option>
     </select>
+    <p class="section-label" style="margin-top:16px">Übersicht-Layout</p>
+    <select class="scale-select" id="table-variant-sel" aria-label="Übersichts-Darstellung">
+      <option value="classic">Klassisch (alle Spalten)</option>
+      <option value="presets">Profile (Holdings/Signale/Technik)</option>
+      <option value="compact">Kompakt (+ Detail)</option>
+      <option value="cards">Karten</option>
+    </select>
+    <p class="hint" style="margin-top:6px">Gilt aktuell nur für die Portfolio-Liste.</p>
 
     <p class="section-label" style="margin-top:26px">Verbindung</p>
     <div id="setup" class="setup-card" hidden>

@@ -42,6 +42,24 @@ function setCurrency(v){
   try { localStorage.setItem(CURRENCY_KEY, v); } catch {}
 }
 
+// ---------- table variant ----------
+const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
+const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
+const PRESETS = {
+  holdings: ['Ticker','Value','Δ1D','Δ21D','Cons.'],
+  signale:  ['Ticker','Rule','ML','Risk-Opt','Cons.'],
+  technik:  ['Ticker','RSI','50DMA','200DMA','Mom14'],
+};
+function getTableVariant(){
+  try{ const v=localStorage.getItem(TABLE_VARIANT_KEY); if(['classic','presets','compact','cards'].includes(v)) return v; }catch{}
+  return 'classic';
+}
+function getPreset(){
+  try{ const v=localStorage.getItem(TABLE_PRESET_KEY); if(['holdings','signale','technik'].includes(v)) return v; }catch{}
+  return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'signale';
+}
+function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
+
 /**
  * Convert a CHF value to the display currency using the report's FX snapshot.
  * fx = report.fx object { USDCHF, EURCHF, GBPCHF, BTCUSD }.
@@ -289,6 +307,8 @@ function badge(v){ return v? `<span class="badge ${esc(v)}">${esc(v)}</span>` : 
 function pctCell(v){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos'; return `<span class="num ${c}">${fPct(v)}</span>`; }
 function rsiCell(v){ if(!isNum(v)) return '—'; const c = v>=70?'neg':(v<=30?'pos':''); return `<span class="num ${c}">${v.toFixed(1)}</span>`; }
 function tickerCell(r){ return r.tag? `<a href="${esc(r.tag)}" target="_blank" rel="noopener">${esc(r.ticker)}</a>` : esc(r.ticker); }
+function tickerCellSub(r){ const base=r.tag?`<a href="${esc(r.tag)}" target="_blank" rel="noopener">${esc(r.ticker)}</a>`:esc(r.ticker); return `<div>${base}</div><div class="cell-sub">${esc(r.name)}</div>`; }
+function applyPresetCols(){ const allow=PRESETS[getPreset()]; return COLS.filter(c=>allow.includes(c[0])).map(c=>c[0]==='Ticker'?['Ticker',r=>r.ticker,(v,r)=>tickerCellSub(r),'l']:c); }
 
 // ---------- error surface ----------
 export function setViewerError(msg){
@@ -317,8 +337,7 @@ function load(json){
   }
 
   $('#meta').innerHTML = `${regimeBadge}<b>${esc(json.portfolio||'?')}</b> &nbsp;·&nbsp; ${ROWS.length} tickers &nbsp;·&nbsp; generated ${esc(json.generated||'')}`;
-  $('#tbl').style.display='';
-  renderHead(); renderBody();
+  renderOverview();
   populateChartTicker();
   if(ROWS.length) select(ROWS[0].ticker);
 
@@ -492,19 +511,21 @@ function populateChartTicker(){
 }
 
 // ---------- table ----------
-function renderHead(){
+function renderHead(cols){
+  cols=cols||COLS;
   const tr=document.createElement('tr');
-  COLS.forEach((c)=>{
+  cols.forEach((c)=>{
     const th=document.createElement('th');
     const key = c[0];
     th.textContent = key + (sortKey===key? (sortDir>0?' ▲':' ▼'):'');
-    th.onclick=()=>{ if(sortKey===key) sortDir=-sortDir; else {sortKey=key; sortDir=1;} renderBody(); renderHead(); };
+    th.onclick=()=>{ if(sortKey===key) sortDir=-sortDir; else {sortKey=key; sortDir=1;} if(DATA) renderOverview(); };
     tr.appendChild(th);
   });
   const th=$('#tbl thead'); th.innerHTML=''; th.appendChild(tr);
 }
-function sortVal(r,key){
-  const col=COLS.find(c=>c[0]===key); if(!col) return null;
+function sortVal(r,key,cols){
+  cols=cols||COLS;
+  const col=cols.find(c=>c[0]===key); if(!col) return null;
   const v = col[1](r);
   // Panel column: sort by signal polarity rank
   if(col[4] && col[4].panelCol){
@@ -516,10 +537,12 @@ function sortVal(r,key){
   if(typeof v==='string' && recRank[v]) return recRank[v];
   return v;
 }
-function renderBody(){
+function renderBody(cols,rowOnClick){
+  cols=cols||COLS;
+  rowOnClick=rowOnClick||(r=>{select(r.ticker);window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'}));});
   const q=$('#filter').value.trim().toLowerCase();
   let rows=ROWS.filter(r=> !q || (r.name+' '+r.ticker).toLowerCase().includes(q));
-  rows.sort((a,b)=>{ let x=sortVal(a,sortKey), y=sortVal(b,sortKey);
+  rows.sort((a,b)=>{ let x=sortVal(a,sortKey,cols), y=sortVal(b,sortKey,cols);
     if(x==null) return 1; if(y==null) return -1;
     if(typeof x==='string'||typeof y==='string'){ x=String(x); y=String(y); return x<y?-sortDir:x>y?sortDir:0; }
     return (x-y)*sortDir; });
@@ -527,14 +550,182 @@ function renderBody(){
   for(const r of rows){
     const tr=document.createElement('tr'); tr.dataset.ticker=r.ticker;
     if(r.ticker===selected) tr.className='sel';
-    COLS.forEach(c=>{ const td=document.createElement('td'); const val=c[1](r);
+    cols.forEach(c=>{ const td=document.createElement('td'); const val=c[1](r);
       td.innerHTML = c[2](val,r); if(c[3]==='l') td.style.textAlign='left'; tr.appendChild(td); });
-    tr.onclick=()=>{
-      select(r.ticker);
-      // Navigate to Charts tab so the user sees the chart immediately.
-      window.dispatchEvent(new CustomEvent('pwa:navigate', { detail: 'charts' }));
-    };
+    const _r=r; tr.onclick=()=>rowOnClick(_r);
     tb.appendChild(tr);
+  }
+}
+
+// ---------- variant renderers ----------
+function getOrCreateCardsWrap(){
+  let w=$('#cards-wrap');
+  if(!w){
+    w=document.createElement('div'); w.id='cards-wrap'; w.style.display='none';
+    const ts=document.querySelector('.table-scroll');
+    if(ts) ts.insertAdjacentElement('afterend',w);
+    else document.getElementById('page-overview').appendChild(w);
+  }
+  return w;
+}
+
+function heatColor(v,kind){
+  if(!isNum(v)) return '';
+  if(kind==='pct'){
+    const a=Math.min(1,Math.abs(v)/0.05).toFixed(2);
+    return v>0?`rgba(46,204,113,${a})`:v<0?`rgba(255,92,92,${a})`:'';
+  }
+  if(kind==='rsi'){
+    if(v>=70) return 'rgba(255,92,92,0.35)';
+    if(v<=30) return 'rgba(46,204,113,0.35)';
+  }
+  return '';
+}
+
+function drawSparkline(cv,closes){
+  if(!cv||!closes||closes.length<=1) return;
+  const valid=closes.filter(v=>isNum(v));
+  if(valid.length<=1) return;
+  const {ctx,w,h}=setupCanvas(cv);
+  const mn=Math.min(...valid),mx=Math.max(...valid),range=mx-mn||1;
+  const first=valid[0],last=valid[valid.length-1];
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle=last>=first?'#2ecc71':'#ff5c5c';
+  ctx.lineWidth=1.5; ctx.beginPath();
+  let pen=false; const n=closes.length;
+  for(let i=0;i<n;i++){
+    if(!isNum(closes[i])){pen=false;continue;}
+    const x=(i/(n-1||1))*w;
+    const y=h-((closes[i]-mn)/range)*h*0.9-h*0.05;
+    if(!pen){ctx.moveTo(x,y);pen=true;}else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+}
+
+function openRowSheet(ticker){
+  const r=ROWS.find(t=>t.ticker===ticker); if(!r) return;
+  document.querySelectorAll('.row-sheet-backdrop,.row-sheet').forEach(el=>el.remove());
+  const backdrop=document.createElement('div'); backdrop.className='row-sheet-backdrop';
+  const sheet=document.createElement('div'); sheet.className='row-sheet';
+  const panelCols=DATA&&DATA.columns?DATA.columns:[];
+  const panelHtml=panelCols.map(col=>glyph(r.panel&&r.panel[col.key],col)).join(' ');
+  const consColDef=COLS.find(c=>c[0]==='Cons.');
+  const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
+  const hasHoldings=DATA&&DATA.fx;
+  const d1d=typeof r.s['change_1d']==='number'?r.s['change_1d']:null;
+  const metrics=[
+    ['Preis',fNum(r.s['Current_Price'],2)],
+    ['Δ1D',pctCell(d1d)],
+    ['Δ21D',pctCell(r.s['Change_21D'])],
+    ['RSI',rsiCell(r.s['RSI'])],
+    ['50DMA',fNum(r.s['50DMA'],2)],
+    ['200DMA',fNum(r.s['200DMA'],2)],
+    ['↕200',fInt(r.s['above_200DMA'])],
+    ['Mom14',pctCell(r.s['Momentum'])],
+  ];
+  if(hasHoldings&&r.holding&&isNum(r.holding.value_chf))
+    metrics.unshift(['Value',convertCHF(r.holding.value_chf,getCurrency(),DATA.fx)]);
+  const metricsHtml=metrics.map(([k,v])=>`<div class="rs-metric"><span class="rs-metric-label">${esc(k)}</span><span class="rs-metric-value">${v}</span></div>`).join('');
+  sheet.innerHTML=`<div class="row-sheet-panel">
+    <div class="row-sheet-header">
+      <div class="row-sheet-title">${tickerCell(r)}</div>
+      <div class="row-sheet-sub">${esc(r.name)}&nbsp;&middot;&nbsp;${esc(r.exchange||'')}</div>
+    </div>
+    <div class="row-sheet-section">
+      <div class="row-sheet-section-label">Empfehlungen</div>
+      <div class="row-sheet-glyphs">${panelHtml}${consHtml?`<span style="margin-left:4px">${consHtml}</span>`:''}</div>
+    </div>
+    <div class="row-sheet-section">
+      <div class="row-sheet-section-label">Kennzahlen</div>
+      <div class="rs-metrics">${metricsHtml}</div>
+    </div>
+    <button class="btn row-sheet-chart-btn">&rarr; Chart</button>
+  </div>`;
+  document.body.appendChild(backdrop); document.body.appendChild(sheet);
+  const close=()=>{backdrop.remove();sheet.remove();};
+  backdrop.addEventListener('click',close);
+  sheet.querySelector('.row-sheet-chart-btn').addEventListener('click',()=>{
+    close(); select(ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'}));
+  });
+}
+
+function renderCompact(){
+  const hasHoldings=DATA&&DATA.fx;
+  const consColDef=COLS.find(c=>c[0]==='Cons.')||['Cons.',()=>null,()=>'—','b'];
+  const contextCol=hasHoldings
+    ?(COLS.find(c=>c[0]==='Value')||['Value',r=>(r.holding&&isNum(r.holding.value_chf))?r.holding.value_chf:null,v=>convertCHF(v,getCurrency(),DATA&&DATA.fx),'n',{isValue:true}])
+    :(COLS.find(c=>c[0]==='Δ1D')||['Δ1D',()=>null,()=>'—','n']);
+  const compactCols=[
+    ['Ticker',r=>r.ticker,(v,r)=>tickerCellSub(r),'l'],
+    consColDef,
+    contextCol,
+  ];
+  renderHead(compactCols);
+  renderBody(compactCols,r=>openRowSheet(r.ticker));
+}
+
+function renderCards(){
+  const cardsWrap=getOrCreateCardsWrap();
+  cardsWrap.style.display=''; cardsWrap.innerHTML='';
+  const hasHoldings=DATA&&DATA.fx;
+  const panelCols=DATA&&DATA.columns?DATA.columns:[];
+  const consColDef=COLS.find(c=>c[0]==='Cons.');
+  const q=$('#filter').value.trim().toLowerCase();
+  let rows=ROWS.filter(r=>!q||(r.name+' '+r.ticker).toLowerCase().includes(q));
+  rows.sort((a,b)=>{let x=sortVal(a,sortKey,COLS),y=sortVal(b,sortKey,COLS);
+    if(x==null)return 1;if(y==null)return -1;
+    if(typeof x==='string'||typeof y==='string'){x=String(x);y=String(y);return x<y?-sortDir:x>y?sortDir:0;}
+    return(x-y)*sortDir;});
+  for(const r of rows){
+    const card=document.createElement('div'); card.className='ov-card';
+    const d1d=typeof r.s['change_1d']==='number'?r.s['change_1d']:null;
+    const d21d=r.s['Change_21D'],rsiV=r.s['RSI'];
+    const h1=heatColor(d1d,'pct'),h2=heatColor(d21d,'pct'),h3=heatColor(rsiV,'rsi');
+    let mh=`<div class="ov-card-chip"${h1?` style="background:${h1}"`:''}>
+        <span class="ov-card-chip-label">Δ1D</span><span>${pctCell(d1d)}</span></div>`;
+    mh+=`<div class="ov-card-chip"${h2?` style="background:${h2}"`:''}>
+        <span class="ov-card-chip-label">Δ21D</span><span>${pctCell(d21d)}</span></div>`;
+    mh+=`<div class="ov-card-chip"${h3?` style="background:${h3}"`:''}>
+        <span class="ov-card-chip-label">RSI</span><span class="num">${isNum(rsiV)?rsiV.toFixed(1):'—'}</span></div>`;
+    if(hasHoldings&&r.holding&&isNum(r.holding.value_chf))
+      mh+=`<div class="ov-card-chip"><span class="ov-card-chip-label">Value</span><span>${convertCHF(r.holding.value_chf,getCurrency(),DATA.fx)}</span></div>`;
+    const glyphsHtml=panelCols.map(col=>glyph(r.panel&&r.panel[col.key],col)).join(' ');
+    const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
+    card.innerHTML=`<div class="ov-card-head">
+        <span class="ov-card-ticker">${esc(r.ticker)}</span>
+        <span class="ov-card-name">${esc(r.name)}</span></div>
+      <div class="ov-card-metrics">${mh}</div>
+      <div class="ov-card-glyphs">${glyphsHtml}${consHtml?`<span style="margin-left:4px">${consHtml}</span>`:''}</div>
+      <canvas class="ov-spark"></canvas>`;
+    card.addEventListener('click',()=>openRowSheet(r.ticker));
+    cardsWrap.appendChild(card);
+    const cv=card.querySelector('.ov-spark'),_r=r;
+    ensureSeries(_r.ticker).then(()=>{
+      drawSparkline(cv,(_r.series&&_r.series.close||[]).slice(-90));
+    }).catch(()=>{});
+  }
+}
+
+function renderOverview(){
+  const isPortfolio=!!(DATA&&DATA.portfolio==='Portfolio');
+  const variant=isPortfolio?getTableVariant():'classic';
+  const presetSel=$('#table-preset-sel');
+  if(presetSel) presetSel.style.display=(variant==='presets')?'':'none';
+  const tbl=$('#tbl');
+  if(variant==='cards'){
+    if(tbl) tbl.style.display='none';
+    renderCards(); return;
+  }
+  if(tbl) tbl.style.display='';
+  const cw=$('#cards-wrap'); if(cw){cw.innerHTML='';cw.style.display='none';}
+  if(variant==='presets'){
+    if(presetSel) presetSel.value=getPreset();
+    const filteredCols=applyPresetCols();
+    renderHead(filteredCols); renderBody(filteredCols);
+  } else if(variant==='compact'){
+    renderCompact();
+  } else {
+    renderHead(); renderBody();
   }
 }
 
@@ -811,7 +1002,7 @@ function onLeave(){ hoverIdx=null; $('#tip').style.display='none'; draw(); }
 
 // ---------- init ----------
 export function initViewer(){
-  $('#filter').oninput=renderBody;
+  $('#filter').oninput=()=>{ if(DATA) renderOverview(); };
 
   // Currency selector — re-render table and perf graph without refetch
   const currSel = $('#currency-sel');
@@ -821,8 +1012,7 @@ export function initViewer(){
       setCurrency(currSel.value);
       // Rebuild COLS so Value column header and formatter picks up new currency
       if(DATA) COLS = buildCols();
-      renderHead();
-      renderBody();
+      renderOverview();
       // Redraw perf graph using cached data
       const list = DATA && DATA.portfolio;
       if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
@@ -890,6 +1080,10 @@ export function initViewer(){
       if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
     }
   });
+
+  window.addEventListener('pwa:table-variant',()=>{ if(DATA) renderOverview(); });
+  const presetSel=$('#table-preset-sel');
+  if(presetSel) presetSel.addEventListener('change',()=>{ setPreset(presetSel.value); if(DATA) renderOverview(); });
 
   // Width-guarded resize: only redraw on actual width changes (not URL-bar jitter).
   let rz;

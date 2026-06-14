@@ -107,6 +107,16 @@ export function initInfo() {
   applyScale(savedScale);
 
   document.getElementById('scale-select')?.addEventListener('change', e => applyScale(e.target.value));
+
+  const tableVariantSel = document.getElementById('table-variant-sel');
+  if(tableVariantSel){
+    try{ const v=localStorage.getItem('pwa.stocks.tableVariant'); if(v) tableVariantSel.value=v; }catch{}
+    tableVariantSel.addEventListener('change', e=>{
+      try{ localStorage.setItem('pwa.stocks.tableVariant', e.target.value); }catch{}
+      window.dispatchEvent(new CustomEvent('pwa:table-variant'));
+    });
+  }
+
   document.getElementById('info-refresh')?.addEventListener('click', render);
   document.getElementById('info-reload')?.addEventListener('click', hardReload);
 
