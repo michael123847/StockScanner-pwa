@@ -692,25 +692,39 @@ let charts={};
 function draw(){
   const S=curSeries(); if(!S) return;
 
+  // fillSteps — carry an indicator across the full visible history. Many series
+  // (Fib levels, 200 MA, recommenders, RSI) have a leading NaN warmup region the
+  // backend can't fill (200-bar MA needs 200 prior bars, the model needs warmup,
+  // etc.), so they otherwise start partway across the chart. This back-fills leading
+  // NaNs with the first valid value and forward-fills internal gaps, so the line
+  // (and its steps) spans the whole chart instead of just the tail.
+  const fillSteps = a => {
+    if (!a) return a; const out = a.slice(); let first = null;
+    for (const v of out) if (isNum(v)) { first = v; break; }
+    if (first === null) return out;            // no data at all → leave untouched
+    let last = first;
+    for (let i = 0; i < out.length; i++) { if (isNum(out[i])) last = out[i]; else out[i] = last; }
+    return out;
+  };
+
   // --- Price chart ---
   const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
 
-  // Build overlay series (MA) and Fib hlines respecting checkbox state
+  // Build overlay series (MA + Fib) respecting checkbox state.
   const overlaySeries = [];
   const legendItems = [];
-  const fibHlines = [];
-  if (show50 && S.ma50) { overlaySeries.push({data:S.ma50,color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
-  if (show200 && S.ma200) { overlaySeries.push({data:S.ma200,color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
+  if (show50 && S.ma50) { overlaySeries.push({data:fillSteps(S.ma50),color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
+  if (show200 && S.ma200) { overlaySeries.push({data:fillSteps(S.ma200),color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
   if (showFib) {
-    // Fib levels as full-width horizontal lines using last known value from each series
-    const lastNum = a => { if(!a) return null; for(let i=a.length-1;i>=0;i--) if(isNum(a[i])) return a[i]; return null; };
-    [[S.fib_236,COL.fib[0],'Fib 23.6%'],[S.fib_382,COL.fib[1],'38.2%'],[S.fib_618,COL.fib[2],'61.8%'],[S.fib_764,COL.fib[3],'76.4%']]
-      .forEach(([arr,c,lbl]) => { const v=lastNum(arr); if(v!==null){fibHlines.push({y:v,color:c}); legendItems.push([c,lbl,1]);} });
+    if (S.fib_236) { overlaySeries.push({data:fillSteps(S.fib_236),color:COL.fib[0],width:1,dash:[5,4]}); legendItems.push([COL.fib[0],'Fib 23.6%',1]); }
+    if (S.fib_382) { overlaySeries.push({data:fillSteps(S.fib_382),color:COL.fib[1],width:1,dash:[5,4]}); legendItems.push([COL.fib[1],'38.2%',1]); }
+    if (S.fib_618) { overlaySeries.push({data:fillSteps(S.fib_618),color:COL.fib[2],width:1,dash:[5,4]}); legendItems.push([COL.fib[2],'61.8%',1]); }
+    if (S.fib_764) { overlaySeries.push({data:fillSteps(S.fib_764),color:COL.fib[3],width:1,dash:[5,4]}); legendItems.push([COL.fib[3],'76.4%',1]); }
   }
 
   if (useCandle) {
-    // Y-bounds from high/low + overlays + fib levels
-    const overlayVals = [...overlaySeries.flatMap(s => s.data || []), ...fibHlines.map(h=>h.y)];
+    // Y-bounds from high/low + overlays
+    const overlayVals = overlaySeries.flatMap(s => s.data || []);
     const [yMin, yMax] = niceBounds([].concat(S.high||[], S.low||[], overlayVals));
     const candles = (S.open).map((o,i) => ({o, h:S.high[i], l:S.low[i], c:S.close[i]}));
     charts.price = plot({
@@ -718,17 +732,16 @@ function draw(){
       yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
       candles,
       series: overlaySeries,
-      hlines: fibHlines,
     });
     legend($('#lg-price'), [['#4dff88','Kerzen (Kauf)'],['#ff4d4d','Kerzen (Verk.)'], ...legendItems]);
   } else {
     // Line mode
-    const [yMin, yMax] = niceBounds([].concat(S.close||[], S.ma200||[], fibHlines.map(h=>h.y)));
+    const overlayVals = overlaySeries.flatMap(s => s.data || []);
+    const [yMin, yMax] = niceBounds([].concat(S.close||[], overlayVals));
     charts.price = plot({
       canvas: $('#c-price'), x: S.date, yMin, yMax,
       yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
       series: [{data:S.close,color:COL.close,width:2}, ...overlaySeries],
-      hlines: fibHlines,
     });
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
   }
@@ -736,15 +749,15 @@ function draw(){
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
     series:[
-      {data:S.rec_filtered,color:COL.recF,width:1.6},
-      {data:S.rec_optimal,color:COL.recO,width:1.4},
-      {data:S.rec_ml,color:COL.recM,width:1.8},
+      {data:fillSteps(S.rec_filtered),color:COL.recF,width:1.6},
+      {data:fillSteps(S.rec_optimal),color:COL.recO,width:1.4},
+      {data:fillSteps(S.rec_ml),color:COL.recM,width:1.8},
     ]});
   legend($('#lg-rec'),[[COL.recF,'Rule (filtered)'],[COL.recO,'Optimal (hindsight)'],[COL.recM,'ML']]);
 
   charts.rsi = plot({ canvas:$('#c-rsi'), x:S.date, yMin:0, yMax:100, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:70,color:'#ff5c5c'},{y:30,color:'#2ecc71'}],
-    series:[{data:S.rsi,color:COL.rsi,width:1.6}] });
+    series:[{data:fillSteps(S.rsi),color:COL.rsi,width:1.6}] });
 }
 
 // ---------- shared hover (mouse + touch) ----------

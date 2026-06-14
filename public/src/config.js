@@ -15,7 +15,7 @@
  */
 export const CONFIG = {
   // Bump together with VERSION in sw.js on every deploy.
-  APP_VERSION: 'v1.4.3',
+  APP_VERSION: 'v1.4.5',
 
   // Only the generic mDNS hostname is public; lan_ip + ts come from
   // /api/stocks/config and are cached in localStorage (see siteConfig.js).
