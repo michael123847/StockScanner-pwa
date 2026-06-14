@@ -43,22 +43,18 @@ function setCurrency(v){
 }
 
 // ---------- table variant ----------
-const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 const PRESETS = {
   holdings: ['Ticker','Value','Δ1D','Δ21D','Cons.'],
   signale:  ['Ticker','Rule','ML','Risk-Opt','Cons.'],
   technik:  ['Ticker','RSI','50DMA','200DMA','Mom14'],
 };
-function getTableVariant(){
-  try{ const v=localStorage.getItem(TABLE_VARIANT_KEY); if(['classic','presets','compact','cards'].includes(v)) return v; }catch{}
-  return 'classic';
-}
 function getPreset(){
   try{ const v=localStorage.getItem(TABLE_PRESET_KEY); if(['holdings','signale','technik'].includes(v)) return v; }catch{}
   return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'signale';
 }
 function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
+const isPortrait=()=>window.matchMedia('(orientation: portrait)').matches;
 
 /**
  * Convert a CHF value to the display currency using the report's FX snapshot.
@@ -67,7 +63,7 @@ function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
  */
 function convertCHF(valueCHF, currency, fx){
   if(valueCHF == null || !isNum(valueCHF)) return '—';
-  if(!fx) return currency === 'CHF' ? fNum(valueCHF, 2) + ' CHF' : '—';
+  if(!fx) return currency === 'CHF' ? fSig(valueCHF) + ' CHF' : '—';
   let result;
   if(currency === 'CHF'){
     result = valueCHF;
@@ -87,8 +83,8 @@ function convertCHF(valueCHF, currency, fx){
     return '—';
   }
   if(!isNum(result)) return '—';
-  if(currency === 'BTC') return result.toFixed(6) + ' BTC';
-  return fNum(result, 2) + ' ' + currency;
+  if(currency === 'BTC') return fSig(result) + ' BTC';
+  return fSig(result) + ' ' + currency;
 }
 
 /**
@@ -144,6 +140,11 @@ const isNum = v => typeof v==='number' && isFinite(v);
 const fNum=(v,d=2)=> isNum(v)? v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
 const fPct=v=> isNum(v)? (v*100).toFixed(1)+'%' : '—';
 const fInt=v=> isNum(v)? Math.round(v).toString() : '—';
+const fSig=v=>{ if(!isNum(v)) return '—';
+  const a=Math.abs(v); let div=1,suf='';
+  if(a>=1e9){div=1e9;suf='b';} else if(a>=1e6){div=1e6;suf='m';} else if(a>=1e3){div=1e3;suf='k';}
+  let s=(v/div).toPrecision(4); if(s.indexOf('.')>=0) s=s.replace(/\.?0+$/,'');
+  return s+suf; };
 // Legacy rank for back-compat; signal polarity now uses signalRank() below.
 const recRank={Buy:3,Hold:2,Sell:1};
 
@@ -266,11 +267,11 @@ function buildCols(){
     'b',
   ];
   const staticAfter = [
-    ['Price',    r=>r.s['Current_Price'],     v=>fNum(v,2),            'n'],
+    ['Price',    r=>r.s['Current_Price'],     v=>fSig(v),              'n'],
     ['RSI',      r=>r.s['RSI'],               v=>rsiCell(v),           'n'],
-    ['200DMA',   r=>r.s['200DMA'],            v=>fNum(v,2),            'n'],
+    ['200DMA',   r=>r.s['200DMA'],            v=>fSig(v),              'n'],
     ['↕200',     r=>r.s['above_200DMA'],      v=>fInt(v),              'n'],
-    ['50DMA',    r=>r.s['50DMA'],             v=>fNum(v,2),            'n'],
+    ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
     ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
     ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
   ];
@@ -293,11 +294,11 @@ let COLS = [
   ['Ticker',   r=>r.ticker,                (v,r)=>tickerCell(r),    'l'],
   ['Name',     r=>r.name,                  v=>esc(v),               'l'],
   ['Δ1D',     r=>{ if(typeof r.s['change_1d']==='number') return r.s['change_1d']; const c=r.series&&r.series.close; return(c&&c.length>=2)?c[c.length-1]/c[c.length-2]-1:null; }, v=>pctCell(v), 'n'],
-  ['Price',    r=>r.s['Current_Price'],     v=>fNum(v,2),            'n'],
+  ['Price',    r=>r.s['Current_Price'],     v=>fSig(v),              'n'],
   ['RSI',      r=>r.s['RSI'],               v=>rsiCell(v),           'n'],
-  ['200DMA',   r=>r.s['200DMA'],            v=>fNum(v,2),            'n'],
+  ['200DMA',   r=>r.s['200DMA'],            v=>fSig(v),              'n'],
   ['↕200',     r=>r.s['above_200DMA'],      v=>fInt(v),              'n'],
-  ['50DMA',    r=>r.s['50DMA'],             v=>fNum(v,2),            'n'],
+  ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
   ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
   ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
 ];
@@ -558,49 +559,6 @@ function renderBody(cols,rowOnClick){
 }
 
 // ---------- variant renderers ----------
-function getOrCreateCardsWrap(){
-  let w=$('#cards-wrap');
-  if(!w){
-    w=document.createElement('div'); w.id='cards-wrap'; w.style.display='none';
-    const ts=document.querySelector('.table-scroll');
-    if(ts) ts.insertAdjacentElement('afterend',w);
-    else document.getElementById('page-overview').appendChild(w);
-  }
-  return w;
-}
-
-function heatColor(v,kind){
-  if(!isNum(v)) return '';
-  if(kind==='pct'){
-    const a=Math.min(1,Math.abs(v)/0.05).toFixed(2);
-    return v>0?`rgba(46,204,113,${a})`:v<0?`rgba(255,92,92,${a})`:'';
-  }
-  if(kind==='rsi'){
-    if(v>=70) return 'rgba(255,92,92,0.35)';
-    if(v<=30) return 'rgba(46,204,113,0.35)';
-  }
-  return '';
-}
-
-function drawSparkline(cv,closes){
-  if(!cv||!closes||closes.length<=1) return;
-  const valid=closes.filter(v=>isNum(v));
-  if(valid.length<=1) return;
-  const {ctx,w,h}=setupCanvas(cv);
-  const mn=Math.min(...valid),mx=Math.max(...valid),range=mx-mn||1;
-  const first=valid[0],last=valid[valid.length-1];
-  ctx.clearRect(0,0,w,h);
-  ctx.strokeStyle=last>=first?'#2ecc71':'#ff5c5c';
-  ctx.lineWidth=1.5; ctx.beginPath();
-  let pen=false; const n=closes.length;
-  for(let i=0;i<n;i++){
-    if(!isNum(closes[i])){pen=false;continue;}
-    const x=(i/(n-1||1))*w;
-    const y=h-((closes[i]-mn)/range)*h*0.9-h*0.05;
-    if(!pen){ctx.moveTo(x,y);pen=true;}else ctx.lineTo(x,y);
-  }
-  ctx.stroke();
-}
 
 function openRowSheet(ticker){
   const r=ROWS.find(t=>t.ticker===ticker); if(!r) return;
@@ -611,21 +569,10 @@ function openRowSheet(ticker){
   const panelHtml=panelCols.map(col=>glyph(r.panel&&r.panel[col.key],col)).join(' ');
   const consColDef=COLS.find(c=>c[0]==='Cons.');
   const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
-  const hasHoldings=DATA&&DATA.fx;
-  const d1d=typeof r.s['change_1d']==='number'?r.s['change_1d']:null;
-  const metrics=[
-    ['Preis',fNum(r.s['Current_Price'],2)],
-    ['Δ1D',pctCell(d1d)],
-    ['Δ21D',pctCell(r.s['Change_21D'])],
-    ['RSI',rsiCell(r.s['RSI'])],
-    ['50DMA',fNum(r.s['50DMA'],2)],
-    ['200DMA',fNum(r.s['200DMA'],2)],
-    ['↕200',fInt(r.s['above_200DMA'])],
-    ['Mom14',pctCell(r.s['Momentum'])],
-  ];
-  if(hasHoldings&&r.holding&&isNum(r.holding.value_chf))
-    metrics.unshift(['Value',convertCHF(r.holding.value_chf,getCurrency(),DATA.fx)]);
-  const metricsHtml=metrics.map(([k,v])=>`<div class="rs-metric"><span class="rs-metric-label">${esc(k)}</span><span class="rs-metric-value">${v}</span></div>`).join('');
+  const skipCols=new Set(['Ticker','Name','Cons.']);
+  const metricsHtml=COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
+    .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
+    .join('');
   sheet.innerHTML=`<div class="row-sheet-panel">
     <div class="row-sheet-header">
       <div class="row-sheet-title">${tickerCell(r)}</div>
@@ -649,83 +596,21 @@ function openRowSheet(ticker){
   });
 }
 
-function renderCompact(){
-  const hasHoldings=DATA&&DATA.fx;
-  const consColDef=COLS.find(c=>c[0]==='Cons.')||['Cons.',()=>null,()=>'—','b'];
-  const contextCol=hasHoldings
-    ?(COLS.find(c=>c[0]==='Value')||['Value',r=>(r.holding&&isNum(r.holding.value_chf))?r.holding.value_chf:null,v=>convertCHF(v,getCurrency(),DATA&&DATA.fx),'n',{isValue:true}])
-    :(COLS.find(c=>c[0]==='Δ1D')||['Δ1D',()=>null,()=>'—','n']);
-  const compactCols=[
-    ['Ticker',r=>r.ticker,(v,r)=>tickerCellSub(r),'l'],
-    consColDef,
-    contextCol,
-  ];
-  renderHead(compactCols);
-  renderBody(compactCols,r=>openRowSheet(r.ticker));
-}
-
-function renderCards(){
-  const cardsWrap=getOrCreateCardsWrap();
-  cardsWrap.style.display=''; cardsWrap.innerHTML='';
-  const hasHoldings=DATA&&DATA.fx;
-  const panelCols=DATA&&DATA.columns?DATA.columns:[];
-  const consColDef=COLS.find(c=>c[0]==='Cons.');
-  const q=$('#filter').value.trim().toLowerCase();
-  let rows=ROWS.filter(r=>!q||(r.name+' '+r.ticker).toLowerCase().includes(q));
-  rows.sort((a,b)=>{let x=sortVal(a,sortKey,COLS),y=sortVal(b,sortKey,COLS);
-    if(x==null)return 1;if(y==null)return -1;
-    if(typeof x==='string'||typeof y==='string'){x=String(x);y=String(y);return x<y?-sortDir:x>y?sortDir:0;}
-    return(x-y)*sortDir;});
-  for(const r of rows){
-    const card=document.createElement('div'); card.className='ov-card';
-    const d1d=typeof r.s['change_1d']==='number'?r.s['change_1d']:null;
-    const d21d=r.s['Change_21D'],rsiV=r.s['RSI'];
-    const h1=heatColor(d1d,'pct'),h2=heatColor(d21d,'pct'),h3=heatColor(rsiV,'rsi');
-    let mh=`<div class="ov-card-chip"${h1?` style="background:${h1}"`:''}>
-        <span class="ov-card-chip-label">Δ1D</span><span>${pctCell(d1d)}</span></div>`;
-    mh+=`<div class="ov-card-chip"${h2?` style="background:${h2}"`:''}>
-        <span class="ov-card-chip-label">Δ21D</span><span>${pctCell(d21d)}</span></div>`;
-    mh+=`<div class="ov-card-chip"${h3?` style="background:${h3}"`:''}>
-        <span class="ov-card-chip-label">RSI</span><span class="num">${isNum(rsiV)?rsiV.toFixed(1):'—'}</span></div>`;
-    if(hasHoldings&&r.holding&&isNum(r.holding.value_chf))
-      mh+=`<div class="ov-card-chip"><span class="ov-card-chip-label">Value</span><span>${convertCHF(r.holding.value_chf,getCurrency(),DATA.fx)}</span></div>`;
-    const glyphsHtml=panelCols.map(col=>glyph(r.panel&&r.panel[col.key],col)).join(' ');
-    const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
-    card.innerHTML=`<div class="ov-card-head">
-        <span class="ov-card-ticker">${esc(r.ticker)}</span>
-        <span class="ov-card-name">${esc(r.name)}</span></div>
-      <div class="ov-card-metrics">${mh}</div>
-      <div class="ov-card-glyphs">${glyphsHtml}${consHtml?`<span style="margin-left:4px">${consHtml}</span>`:''}</div>
-      <canvas class="ov-spark"></canvas>`;
-    card.addEventListener('click',()=>openRowSheet(r.ticker));
-    cardsWrap.appendChild(card);
-    const cv=card.querySelector('.ov-spark'),_r=r;
-    ensureSeries(_r.ticker).then(()=>{
-      drawSparkline(cv,(_r.series&&_r.series.close||[]).slice(-90));
-    }).catch(()=>{});
-  }
-}
 
 function renderOverview(){
-  const isPortfolio=!!(DATA&&DATA.portfolio==='Portfolio');
-  const variant=isPortfolio?getTableVariant():'classic';
+  const portrait=isPortrait();
   const presetSel=$('#table-preset-sel');
-  if(presetSel) presetSel.style.display=(variant==='presets')?'':'none';
   const tbl=$('#tbl');
-  if(variant==='cards'){
-    if(tbl) tbl.style.display='none';
-    renderCards(); return;
-  }
   if(tbl) tbl.style.display='';
-  const cw=$('#cards-wrap'); if(cw){cw.innerHTML='';cw.style.display='none';}
-  if(variant==='presets'){
-    if(presetSel) presetSel.value=getPreset();
-    const filteredCols=applyPresetCols();
-    renderHead(filteredCols); renderBody(filteredCols);
-  } else if(variant==='compact'){
-    renderCompact();
+  if(portrait){
+    if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
+    const presetCols=applyPresetCols();
+    renderHead(presetCols);
+    renderBody(presetCols,r=>openRowSheet(r.ticker));
   } else {
-    renderHead(); renderBody();
+    if(presetSel) presetSel.style.display='none';
+    renderHead(COLS);
+    renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
   }
 }
 
@@ -920,7 +805,7 @@ function draw(){
     const candles = (S.open).map((o,i) => ({o, h:S.high[i], l:S.low[i], c:S.close[i]}));
     charts.price = plot({
       canvas: $('#c-price'), x: S.date, yMin, yMax,
-      yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
+      yticks: 5, yfmt: v => fSig(v),
       candles,
       series: overlaySeries,
     });
@@ -931,7 +816,7 @@ function draw(){
     const [yMin, yMax] = niceBounds([].concat(S.close||[], overlayVals));
     charts.price = plot({
       canvas: $('#c-price'), x: S.date, yMin, yMax,
-      yticks: 5, yfmt: v => v.toFixed(v>=1000?0:2),
+      yticks: 5, yfmt: v => fSig(v),
       series: [{data:S.close,color:COL.close,width:2}, ...overlaySeries],
     });
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
@@ -970,19 +855,19 @@ function showTip(e,S,i){
     const bullish = (c != null && o != null) ? c >= o : true;
     const candleColor = bullish ? '#4dff88' : '#ff4d4d';
     rows = [
-      ['O', candleColor, fNum(o, 2)],
-      ['H', candleColor, fNum(S.high&&S.high[i], 2)],
-      ['L', candleColor, fNum(S.low&&S.low[i], 2)],
-      ['C', candleColor, fNum(c, 2)],
-      ['50 MA',COL.ma50,fNum(S.ma50&&S.ma50[i],2)],
-      ['200 MA',COL.ma200,fNum(S.ma200&&S.ma200[i],2)],
+      ['O', candleColor, fSig(o)],
+      ['H', candleColor, fSig(S.high&&S.high[i])],
+      ['L', candleColor, fSig(S.low&&S.low[i])],
+      ['C', candleColor, fSig(c)],
+      ['50 MA',COL.ma50,fSig(S.ma50&&S.ma50[i])],
+      ['200 MA',COL.ma200,fSig(S.ma200&&S.ma200[i])],
       ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
     ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
   } else {
     rows = [
-      ['Close',COL.close,fNum(S.close&&S.close[i],2)],
-      ['50 MA',COL.ma50,fNum(S.ma50&&S.ma50[i],2)],
-      ['200 MA',COL.ma200,fNum(S.ma200&&S.ma200[i],2)],
+      ['Close',COL.close,fSig(S.close&&S.close[i])],
+      ['50 MA',COL.ma50,fSig(S.ma50&&S.ma50[i])],
+      ['200 MA',COL.ma200,fSig(S.ma200&&S.ma200[i])],
       ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
       ['ML',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
     ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
@@ -1081,7 +966,7 @@ export function initViewer(){
     }
   });
 
-  window.addEventListener('pwa:table-variant',()=>{ if(DATA) renderOverview(); });
+  window.matchMedia('(orientation: portrait)').addEventListener('change',()=>{ if(DATA) renderOverview(); });
   const presetSel=$('#table-preset-sel');
   if(presetSel) presetSel.addEventListener('change',()=>{ setPreset(presetSel.value); if(DATA) renderOverview(); });
 
