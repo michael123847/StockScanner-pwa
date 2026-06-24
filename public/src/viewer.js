@@ -180,10 +180,10 @@ function normalizeSchema(json){
   if(json.schema === 2) return json; // already v2 — pass through unchanged
   // Synthesize v2 shape from flat summary fields
   json.columns = [
-    {key:'rule',    label:'Rule',     axis:'reference',  badge:'validated'},
-    {key:'ml_risk', label:'Risk-Opt', axis:'defensive',  badge:'experimental'},
+    {key:'rule',    label:'Rule',     axis:'reference', badge:'validated'},
+    {key:'ml_risk', label:'Risk-Opt', axis:'defensive', badge:'experimental'},
     {key:'dp',      label:'Hindsight',axis:'reference'},
-    {key:'ml',      label:'The Bet',  axis:'directional',badge:'experimental'},
+    {key:'ml',      label:'The Bet',  axis:'reference', badge:'experimental'},
   ];
   for(const t of (json.tickers||[])){
     const s = t.summary || {};
