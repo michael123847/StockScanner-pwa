@@ -180,9 +180,10 @@ function normalizeSchema(json){
   if(json.schema === 2) return json; // already v2 — pass through unchanged
   // Synthesize v2 shape from flat summary fields
   json.columns = [
-    {key:'rule', label:'Rule',     axis:'reference', badge:'validated'},
-    {key:'ml',   label:'ML',       axis:'reference', badge:'experimental'},
-    {key:'dp',   label:'Hindsight',axis:'reference'},
+    {key:'rule',    label:'Rule',     axis:'reference',  badge:'validated'},
+    {key:'ml_risk', label:'Risk-Opt', axis:'defensive',  badge:'experimental'},
+    {key:'dp',      label:'Hindsight',axis:'reference'},
+    {key:'ml',      label:'The Bet',  axis:'directional',badge:'experimental'},
   ];
   for(const t of (json.tickers||[])){
     const s = t.summary || {};
@@ -605,9 +606,9 @@ function renderBody(cols,rowOnClick){
 
 const EXPLAIN = {
   'Rule':      'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
-  'ML':        'Machine-Learning-Modell (Random Forest). ∗ = experimentell, noch nicht gegen Buy-and-Hold validiert.',
+  'The Bet':   'Höchste CAGR im Backtest (ML-Modell mit Confidence-Sizing). Aggressivste Strategie — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
   'Hindsight': 'Rückblick-Optimum: markiert im Nachhinein die besten Kauf-/Verkaufszeitpunkte — Benchmark, kein handelbares Signal.',
-  'Risk-Opt':  'Risikoadaptierter Recommender: handelt nur in Risk-On-Regimen; bei Risk-Off stumm (Hold).',
+  'Risk-Opt':  'Höchstes Sharpe-Ratio im Backtest (ML-Modell mit Risiko-Optimierung). Konservativere Variante — besseres Risiko/Rendite-Verhältnis als The Bet.',
   'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
   'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
   'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
@@ -926,7 +927,7 @@ function draw(){
       {data:fillSteps(S.rec_optimal),color:COL.recO,width:1.4},
       {data:fillSteps(S.rec_ml),color:COL.recM,width:1.8},
     ]});
-  legend($('#lg-rec'),[[COL.recF,'Rule (filtered)'],[COL.recO,'Optimal (hindsight)'],[COL.recM,'ML']]);
+  legend($('#lg-rec'),[[COL.recF,'Rule (filtered)'],[COL.recO,'Optimal (hindsight)'],[COL.recM,'The Bet']]);
 
   charts.rsi = plot({ canvas:$('#c-rsi'), x:S.date, yMin:0, yMax:100, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:70,color:'#ff5c5c'},{y:30,color:'#2ecc71'}],
@@ -966,7 +967,7 @@ function showTip(e,S,i){
       ['50 MA',COL.ma50,fSig(S.ma50&&S.ma50[i])],
       ['200 MA',COL.ma200,fSig(S.ma200&&S.ma200[i])],
       ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
-      ['ML',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
+      ['The Bet',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
     ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
   }
   tip.innerHTML=`<div class="d">${esc((S.date&&S.date[i])||'')}</div>${rows}`;
