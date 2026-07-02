@@ -2,9 +2,8 @@ import { authHeaders, getActiveBase } from './localBridge.js';
 import { CONFIG } from './config.js';
 
 const FALLBACK = [
-  { key: 'Portfolio',           label: 'Portfolio',  builtin: true },
-  { key: 'Watchlist',           label: 'Watchlist',  builtin: true },
-  { key: 'Screenlist_extended', label: 'Watchlist+', builtin: true },
+  { key: 'Portfolio', label: 'Portfolio', builtin: true },
+  { key: 'Watchlist', label: 'Watchlist', builtin: true },
 ];
 
 let _cache = null;

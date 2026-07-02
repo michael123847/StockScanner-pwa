@@ -1,8 +1,11 @@
 :root{
   color-scheme:dark;
   --bg:#1a1a2e; --card:rgba(255,255,255,.07); --card-border:rgba(255,255,255,.11);
-  --text:#fff; --text-dim:rgba(255,255,255,.48); --accent:#4d88ff; --green:#4dff88;
+  --text:#fff; --text-dim:rgba(255,255,255,.62); --accent:#4d88ff; --green:#4dff88;
   --warn:#ffb800; --tab-h:64px;
+  /* Opaque background for floating popups/tooltips — see-through --card (7% white)
+     reads as low-contrast when they sit over busy content (chart, table rows). */
+  --popover:#262640;
   /* StockScanner semantic colors (badges / charts) */
   --buy:#2ecc71; --buy-bg:#163a28; --sell:#ff5c5c; --sell-bg:#3a1717; --hold:#c9a227; --hold-bg:#352e10;
   /* legacy aliases kept so existing viewer.js color refs keep working */
@@ -139,6 +142,7 @@ td a:hover{text-decoration:underline}
 .alloc-caveats{margin:8px 2px 0;padding-left:18px;color:var(--text-dim);font-size:12px}
 .alloc-caveats li{margin:2px 0}
 .badge-2x{display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;color:var(--accent);background:rgba(77,136,255,.15);vertical-align:middle}
+.badge-live{display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.03em;color:var(--green);background:rgba(77,255,136,.15);vertical-align:middle}
 
 /* ── Charts tab ──────────────────────────────────────────────────────────── */
 #chart-ticker{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:7px;width:100%;font-family:inherit;font-size:14px;margin-bottom:10px}
@@ -182,7 +186,7 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .digest-md-sell li{color:var(--sell)}
 .digest-ticker-chip{background:var(--panel2);border:1px solid var(--card-border);border-radius:5px;color:var(--accent);font-family:inherit;font-size:12px;padding:1px 7px;cursor:pointer;vertical-align:baseline}
 .digest-ticker-chip:hover{border-color:var(--accent)}
-.digest-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--card-border);border-radius:8px;padding:6px 14px;font-size:13px;color:var(--text);z-index:999;transition:opacity .4s;pointer-events:none}
+.digest-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--popover);border:1px solid var(--card-border);border-radius:8px;padding:6px 14px;font-size:13px;color:var(--text);z-index:999;transition:opacity .4s;pointer-events:none}
 
 /* ── Info tab ────────────────────────────────────────────────────────────── */
 .info-list{margin-top:14px;background:var(--card);border:1px solid var(--card-border);border-radius:14px;overflow:hidden}
@@ -214,7 +218,7 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-search{position:relative;margin-bottom:10px}
 .pf-search input{width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:15px;font-family:inherit}
 .pf-search input:focus{outline:none;border-color:var(--accent)}
-.pf-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--card-border);border-radius:8px;list-style:none;margin:0;padding:4px 0;z-index:60;max-height:240px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.pf-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--popover);border:1px solid var(--card-border);border-radius:8px;list-style:none;margin:0;padding:4px 0;z-index:60;max-height:240px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
 .pf-result-item{padding:8px 12px;font-size:13px;cursor:pointer;color:var(--text)}
 .pf-result-item:hover{background:rgba(77,136,255,.15);color:var(--accent)}
 .pf-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
@@ -237,7 +241,7 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-edit-cell{cursor:pointer}
 .pf-edit-cell:hover{background:rgba(255,255,255,.04);border-radius:4px}
 /* edit popup (exposure + currency) */
-#pf-edit-popup{position:fixed;background:#262640;border:1px solid var(--card-border);border-radius:10px;padding:14px;z-index:500;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:10px}
+#pf-edit-popup{position:fixed;background:var(--popover);border:1px solid var(--card-border);border-radius:10px;padding:14px;z-index:500;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:10px}
 #pf-edit-popup label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-dim);font-family:inherit}
 #pf-edit-popup input,#pf-edit-popup select{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:16px;width:100%}
 #pf-edit-popup select{font-size:14px}
@@ -254,7 +258,7 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-filter-wrap input{width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:14px;font-family:inherit}
 .pf-filter-wrap input:focus{outline:none;border-color:var(--accent)}
 /* action sheets (move/copy menu, list rename/delete) */
-.pf-action-sheet{position:fixed;background:var(--card);border:1px solid var(--card-border);border-radius:10px;padding:4px 0;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.5);min-width:180px}
+.pf-action-sheet{position:fixed;background:var(--popover);border:1px solid var(--card-border);border-radius:10px;padding:4px 0;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.5);min-width:180px}
 .pf-action-sheet button{display:block;width:100%;background:none;border:none;color:var(--text);padding:9px 14px;font-size:13px;text-align:left;cursor:pointer;font-family:inherit}
 .pf-action-sheet button:hover{background:rgba(77,136,255,.12);color:var(--accent)}
 /* + and ⋯ tab controls */
@@ -281,7 +285,7 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .rs-metric-value{font-size:13px;font-weight:600}
 .row-sheet-chart-btn{width:100%;margin-top:12px;padding:10px;font-size:.9rem}
 .row-sheet-hint{font-size:11px;color:var(--text-dim);margin-top:3px;user-select:none}
-.rs-explain-popup{position:fixed;z-index:1100;background:var(--card);border:1px solid var(--card-border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text);max-width:232px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.rs-explain-popup{position:fixed;z-index:1100;background:var(--popover);border:1px solid var(--card-border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text);max-width:232px;line-height:1.45;box-shadow:0 4px 16px rgba(0,0,0,.4)}
 
 
 /* ── Display scale ───────────────────────────────────────────────────────── */

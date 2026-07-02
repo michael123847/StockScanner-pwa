@@ -222,10 +222,10 @@ function normalizeSchema(json){
   if(json.schema === 2) return json; // already v2 — pass through unchanged
   // Synthesize v2 shape from flat summary fields
   json.columns = [
-    {key:'rule',    label:'Rule',     axis:'reference', badge:'validated'},
-    {key:'ml_risk', label:'Risk-Opt', axis:'defensive', badge:'experimental'},
-    {key:'dp',      label:'Hindsight',axis:'reference'},
-    {key:'ml',      label:'The Bet',  axis:'reference', badge:'experimental'},
+    {key:'rule',    label:'Rule',       axis:'reference', badge:'validated'},
+    {key:'ml_risk', label:'ML (Live)',  axis:'defensive', badge:'live'},
+    {key:'dp',      label:'DP (Oracle)',axis:'reference', badge:'oracle'},
+    {key:'ml',      label:'The Bet',    axis:'reference', badge:'experimental'},
   ];
   for(const t of (json.tickers||[])){
     const s = t.summary || {};
@@ -273,9 +273,15 @@ function glyph(cell, col){
   // Badge/paper superscript mark
   let mark = '';
   if(col && col.badge === 'experimental') mark = `<sup title="experimental — not yet validated">*</sup>`;
+  else if(col && col.badge === 'oracle')  mark = `<sup title="Oracle — Rückschau, nicht handelbar">*</sup>`;
   else if(col && col.paper)               mark = `<sup title="paper only">&#x1D4AB;</sup>`;
 
-  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>`;
+  // Production-model pill (distinct from the * star, which is reserved for
+  // oracle/experimental cards).
+  const live = (col && col.badge === 'live')
+    ? `<span class="badge-live" title="Produktions-Modell (live)">LIVE</span>` : '';
+
+  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>${live}`;
 }
 
 // ---------- dynamic COLS helpers ----------
@@ -648,10 +654,10 @@ function renderBody(cols,rowOnClick){
 // ---------- variant renderers ----------
 
 const EXPLAIN = {
-  'Rule':      'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
-  'The Bet':   'Höchste CAGR im Backtest (ML-Modell mit Confidence-Sizing). Aggressivste Strategie — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
-  'Hindsight': 'Rückblick-Optimum: markiert im Nachhinein die besten Kauf-/Verkaufszeitpunkte — Benchmark, kein handelbares Signal.',
-  'Risk-Opt':  'Höchstes Sharpe-Ratio im Backtest (ML-Modell mit Risiko-Optimierung). Konservativere Variante — besseres Risiko/Rendite-Verhältnis als The Bet.',
+  'Rule':        'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
+  'The Bet':     'Legacy ML-Modell (höchste CAGR im Backtest, Confidence-Sizing, kein Risiko-Overlay). Aggressivste Variante — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
+  'DP (Oracle)': 'Rückblick-Optimum mit demselben Cut wie das Trainingslabel (dp_state_cut): Bars nahe dem aktuellen Rand, die noch nicht "settled" sind, bleiben leer. Benchmark, kein handelbares Signal. ∗ = Oracle.',
+  'ML (Live)':   'Produktions-Modell (er=0.90, höchstes Sharpe-Ratio im Backtest). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet.',
   'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
   'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
   'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
@@ -1086,14 +1092,20 @@ function draw(){
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
   }
 
+  // ML (Live) is a 5-band signal ({-2..+2}); scale /2 so it shares the -1..1
+  // axis with Rule and DP-Oracle (tooltip still shows the raw band value).
+  const scaleHalf = a => a ? a.map(v => isNum(v) ? v / 2 : v) : a;
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
     series:[
       {data:fillSteps(S.rec_filtered),color:COL.recF,width:1.6},
-      {data:fillSteps(S.rec_optimal),color:COL.recO,width:1.4},
-      {data:fillSteps(S.rec_ml),color:COL.recM,width:1.8},
+      // DP (Oracle) intentionally skips fillSteps: the trailing NaN cut (bars not
+      // yet "settled" per dp_settled_boundary) must render as a gap, not be
+      // forward-filled — that gap is the point (oracle isn't handelbar near the edge).
+      {data:S.rec_dp_cut,color:COL.recO,width:1.4},
+      {data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8},
     ]});
-  legend($('#lg-rec'),[[COL.recF,'Rule (filtered)'],[COL.recO,'Optimal (hindsight)'],[COL.recM,'The Bet']]);
+  legend($('#lg-rec'),[[COL.recF,'Rule'],[COL.recO,'DP (Oracle) ∗'],[COL.recM,'ML (Live)']]);
 
   charts.rsi = plot({ canvas:$('#c-rsi'), x:S.date, yMin:0, yMax:100, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:70,color:'#ff5c5c'},{y:30,color:'#2ecc71'}],
@@ -1133,7 +1145,8 @@ function showTip(e,S,i){
       ['50 MA',COL.ma50,fSig(S.ma50&&S.ma50[i])],
       ['200 MA',COL.ma200,fSig(S.ma200&&S.ma200[i])],
       ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
-      ['The Bet',COL.recM,fNum(S.rec_ml&&S.rec_ml[i],0)],
+      ['ML (Live)',COL.recM,fNum(S.rec_ml_live&&S.rec_ml_live[i],0)],
+      ['DP (Oracle)',COL.recO,fNum(S.rec_dp_cut&&S.rec_dp_cut[i],0)],
     ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
   }
   tip.innerHTML=`<div class="d">${esc((S.date&&S.date[i])||'')}</div>${rows}`;

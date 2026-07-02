@@ -14,7 +14,7 @@ import { authHeaders, getActiveBase } from './localBridge.js';
 import { CONFIG } from './config.js';
 import { loadLists as fetchLists } from './lists.js';
 
-const BUILTIN_KEYS = new Set(['Portfolio', 'Watchlist', 'Screenlist_extended']);
+const BUILTIN_KEYS = new Set(['Portfolio', 'Watchlist']);
 
 let LISTS = [];           // [{key, label, builtin, hasJson, count}]
 let _activeList = 'Portfolio';
