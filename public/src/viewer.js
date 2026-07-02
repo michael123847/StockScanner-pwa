@@ -51,10 +51,52 @@ const PRESETS = {
   chancen:  ['Ticker','Cons.','RSI','Mom14'],
 };
 function getPreset(){
-  try{ const v=localStorage.getItem(TABLE_PRESET_KEY); if(['holdings','chancen'].includes(v)) return v; }catch{}
-  return (DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
+  const fallback = ()=>(DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
+  try{
+    const v=localStorage.getItem(TABLE_PRESET_KEY);
+    if(v==='allocation') return allocationData ? 'allocation' : fallback();
+    if(['holdings','chancen'].includes(v)) return v;
+  }catch{}
+  return fallback();
 }
 function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
+
+// ---------- allocation (scheme-#5 sleeve view) ----------
+let allocationData = null;     // cached JSON once fetched successfully
+let allocationTried = false;   // fetch attempted (success or failure)
+
+/** Fetch Output/allocation_scheme5.json via the server; cache in a module var.
+ *  Failure is silent (console.warn only) — the Allokation option simply stays hidden. */
+async function ensureAllocation(){
+  if(allocationTried) return allocationData;
+  allocationTried = true;
+  try{
+    const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
+    allocationData = await apiJson(url);
+  }catch(err){
+    allocationData = null;
+    console.warn('allocation fetch failed:', err.message);
+  }
+  populateAllocationOption();
+  if(DATA) renderOverview(); // reflect newly (un)available option / restore saved 'allocation' preset
+  return allocationData;
+}
+
+function populateAllocationOption(){
+  const presetSel = $('#table-preset-sel');
+  if(!presetSel) return;
+  let opt = presetSel.querySelector('option[value="allocation"]');
+  if(allocationData){
+    if(!opt){
+      opt = document.createElement('option');
+      opt.value = 'allocation';
+      opt.textContent = 'Allokation';
+      presetSel.appendChild(opt);
+    }
+  } else if(opt){
+    opt.remove();
+  }
+}
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
   try{ const v=localStorage.getItem(TABLE_VARIANT_KEY); if(['auto','classic','compact'].includes(v)) return v; }catch{}
@@ -494,6 +536,7 @@ function drawPerf(perf){
 /** Loads the report manifest and renders the newest report. */
 export async function loadReports(){
   await loadLists();
+  ensureAllocation(); // fire-and-forget: populates the Allokation preset option once ready
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
   if(file){
@@ -689,7 +732,8 @@ function renderClassic(){
   const presetSel=$('#table-preset-sel');
   const tbl=$('#tbl');
   if(tbl) tbl.style.display='';
-  if(presetSel) presetSel.style.display='none';
+  if(presetSel) presetSel.style.display=allocationData?'':'none';
+  if(presetSel && allocationData) presetSel.value=getPreset();
   renderHead(COLS);
   renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
 }
@@ -704,11 +748,133 @@ function renderCompact(){
   renderBody(presetCols,r=>openRowSheet(r.ticker));
 }
 
+// Show/hide the allocation-only DOM (header hint + hybrid block + totals footer) alongside #tbl.
+function setAllocExtrasVisible(show){
+  const metaEl=$('#alloc-meta'), hybridEl=$('#alloc-hybrid'), footEl=$('#alloc-foot');
+  if(metaEl) metaEl.style.display=show?'':'none';
+  if(hybridEl) hybridEl.style.display=show?'':'none';
+  if(footEl) footEl.style.display=show?'':'none';
+}
+
 function renderOverview(){
+  if(getPreset()==='allocation' && allocationData){ renderAllocation(); return; }
+  setAllocExtrasVisible(false);
   const v=getTableVariant();
   if(v==='auto') isPortrait()?renderCompact():renderClassic();
   else if(v==='compact') renderCompact();
   else renderClassic();
+}
+
+// ---------- allocation view rendering ----------
+const ALLOC_COLS = [
+  ['Sleeve',        'l'],
+  ['Achse',         'l'],
+  ['Konviktion',    'n'],
+  ['Haupt-Position','n'],
+  ['1×-Shift',      'n'],
+  ['Cash',          'n'],
+];
+
+// Builds the "real money" hybrid table (small, separate <table> — not #tbl) as an HTML string.
+function renderHybridHtml(h){
+  const rows = (h.positions||[]).map(p=>{
+    const conv = isNum(p.conviction_pct) ? fPct(p.conviction_pct/100) : '—';
+    const cash = isNum(p.cash_pct) ? fPct(p.cash_pct/100) : '—';
+    return `<tr>
+      <td style="text-align:left">${esc(p.name||'')}<div class="cell-sub">${esc(p.ticker||'')}</div></td>
+      <td style="text-align:left">${esc(p.stance||'')}</td>
+      <td>${fPct((p.weight_pct||0)/100)}</td>
+      <td>${conv}</td>
+      <td>${fPct((p.hold_now_pct||0)/100)}</td>
+      <td>${cash}</td>
+    </tr>`;
+  }).join('');
+  return `
+    <p class="section-label">${esc(h.label||'Portfolio (real money)')}</p>
+    <div class="table-scroll">
+      <table class="alloc-hybrid-tbl">
+        <thead><tr>
+          <th style="text-align:left">Position</th>
+          <th style="text-align:left">Stance</th>
+          <th>Gewicht</th>
+          <th>Konviktion</th>
+          <th>Halten jetzt</th>
+          <th>Cash</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="alloc-totals">
+      <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
+      <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band</span>
+    </div>
+    ${h.note?`<p class="hint alloc-hint">${esc(h.note)}</p>`:''}
+  `;
+}
+
+function renderAllocation(){
+  const presetSel=$('#table-preset-sel');
+  const tbl=$('#tbl');
+  if(presetSel){ presetSel.style.display=''; presetSel.value='allocation'; }
+
+  const a = allocationData;
+  const metaEl=$('#alloc-meta'), hybridEl=$('#alloc-hybrid'), footEl=$('#alloc-foot');
+  if(metaEl){
+    metaEl.style.display='';
+    metaEl.innerHTML = `<b>${esc(a.label||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}`;
+  }
+
+  if(hybridEl){
+    if(a.hybrid){
+      hybridEl.style.display='';
+      hybridEl.innerHTML = renderHybridHtml(a.hybrid) + '<p class="section-label alloc-hint">Research-Zielschema #5</p>';
+    } else {
+      hybridEl.style.display='none';
+      hybridEl.innerHTML='';
+    }
+  }
+
+  if(tbl) tbl.style.display='';
+  const tr=document.createElement('tr');
+  ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
+  const thead=$('#tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
+
+  const sleeves = (a.sleeves||[]).slice().sort((x,y)=>
+    ((y.hold_primary_pct||0)+(y.hold_1x_pct||0)) - ((x.hold_primary_pct||0)+(x.hold_1x_pct||0)));
+
+  const tb=$('#tbl tbody'); tb.innerHTML='';
+  for(const s of sleeves){
+    const row=document.createElement('tr');
+    const badge2x = s.primary_is_2x ? '<span class="badge-2x">2×</span>' : '';
+    const shift = (s.shift_1x_ticker && isNum(s.hold_1x_pct) && s.hold_1x_pct>0)
+      ? `${fPct((s.hold_1x_pct||0)/100)} ${esc(s.shift_1x_ticker)}`
+      : '—';
+    const cells = [
+      `${esc(s.primary_ticker||s.sleeve||'')}`,
+      esc(s.axis||''),
+      fPct((s.conviction_pct||0)/100),
+      `${fPct((s.hold_primary_pct||0)/100)}${badge2x}`,
+      shift,
+      fPct((s.cash_pct||0)/100),
+    ];
+    cells.forEach((html,i)=>{ const td=document.createElement('td'); td.innerHTML=html;
+      if(ALLOC_COLS[i][1]==='l') td.style.textAlign='left'; row.appendChild(td); });
+    tb.appendChild(row);
+  }
+
+  if(footEl){
+    footEl.style.display='';
+    const caveats = Array.isArray(a.caveats) ? a.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
+    footEl.innerHTML = `
+      <div class="alloc-totals">
+        <span><b>${fPct((a.in_1x_twins_pct||0)/100)}</b> in 1× Twins</span>
+        <span><b>${fPct((a.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
+      </div>
+      <p class="hint alloc-hint">${esc(a.derisk_rule||'')}</p>
+      <p class="hint alloc-hint">${esc(a.cash_destination||'')}</p>
+      ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
+    `;
+  }
 }
 
 // ---------- detail ----------
