@@ -27,15 +27,32 @@
 
 <main class="pages">
 
-  <!-- ── Digest tab ───────────────────────────────────────────────── -->
+  <!-- ── Digest tab (Digest | Allokation sub-tabs — allocation is portfolio-wide
+       and list-independent, not tied to any single Übersicht report) ────── -->
   <section id="page-digest" class="page">
-    <div class="digest-toolbar">
-      <button class="info-btn" id="digest-refresh">Aktualisieren</button>
-      <span id="digest-stamp" class="digest-stamp"></span>
+    <div class="chart-controls" id="digest-subtab-bar">
+      <button class="btn chart-type-btn active" id="dtab-digest" data-subtab="digest">Digest</button>
+      <button class="btn chart-type-btn" id="dtab-alloc" data-subtab="alloc">Allokation</button>
     </div>
-    <div id="digest-error" class="view-error" style="display:none"></div>
-    <pre id="digest-body" class="digest-pre">Digest wird geladen…</pre>
-    <div id="digest-body-md" class="digest-md" style="display:none"></div>
+
+    <div id="digest-panel">
+      <div class="digest-toolbar">
+        <button class="info-btn" id="digest-refresh">Aktualisieren</button>
+        <span id="digest-stamp" class="digest-stamp"></span>
+      </div>
+      <div id="digest-error" class="view-error" style="display:none"></div>
+      <pre id="digest-body" class="digest-pre">Digest wird geladen…</pre>
+      <div id="digest-body-md" class="digest-md" style="display:none"></div>
+    </div>
+
+    <div id="alloc-panel" style="display:none">
+      <div id="alloc-meta" class="hint" style="display:none"></div>
+      <div id="alloc-hybrid" style="display:none"></div>
+      <div class="table-scroll">
+        <table id="alloc-tbl" style="display:none"><thead></thead><tbody></tbody></table>
+      </div>
+      <div id="alloc-foot" style="display:none"></div>
+    </div>
   </section>
 
   <!-- ── Overview tab ──────────────────────────────────────────────── -->
@@ -59,12 +76,9 @@
       <div id="status-line" class="status-line" style="display:none"></div>
     </div>
     <div id="view-error" class="view-error" style="display:none"></div>
-    <div id="alloc-meta" class="hint" style="display:none"></div>
-    <div id="alloc-hybrid" style="display:none"></div>
     <div class="table-scroll">
       <table id="tbl" style="display:none"><thead></thead><tbody></tbody></table>
     </div>
-    <div id="alloc-foot" style="display:none"></div>
     <div id="perf-wrap" style="display:none">
       <div class="legend" id="lg-perf"></div>
       <div class="chartwrap"><canvas id="c-perf"></canvas></div>
@@ -94,7 +108,7 @@
       <div class="overlay-checks" id="rec-checks">
         <label><input type="checkbox" id="chk-rule" checked> Rule</label>
         <label><input type="checkbox" id="chk-dp" checked> DP (Oracle)</label>
-        <label><input type="checkbox" id="chk-mllive" checked> ML (Live)</label>
+        <label><input type="checkbox" id="chk-mllive" checked> ML</label>
       </div>
       <div class="legend" id="lg-rec"></div>
       <div class="chartwrap"><canvas id="c-rec"></canvas></div>

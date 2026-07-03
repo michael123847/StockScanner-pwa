@@ -5,7 +5,7 @@
 import { CONFIG } from './config.js';
 import { getActiveBase, authHeaders } from './localBridge.js';
 import { fmtDateTime } from './format.js';
-import { selectTickerIfPresent } from './viewer.js';
+import { selectTickerIfPresent, ensureAllocation, renderAllocation } from './viewer.js';
 
 const $ = s => document.querySelector(s);
 
@@ -183,7 +183,35 @@ async function loadTxt(base, hdrs, prePre, mdDiv, err, stamp) {
   }
 }
 
+// ---------- Digest | Allokation sub-tabs ----------
+// Allokation is portfolio-wide and list-independent (not tied to any single
+// Übersicht report), so it lives here as a sibling view rather than as an
+// Übersicht column preset.
+const SUBTAB_KEY = 'pwa.stocks.digestSubtab';
+
+function switchSubtab(name) {
+  const digestBtn = $('#dtab-digest'), allocBtn = $('#dtab-alloc');
+  const digestPanel = $('#digest-panel'), allocPanel = $('#alloc-panel');
+  const isAlloc = name === 'alloc';
+  digestBtn?.classList.toggle('active', !isAlloc);
+  allocBtn?.classList.toggle('active', isAlloc);
+  if (digestPanel) digestPanel.style.display = isAlloc ? 'none' : '';
+  if (allocPanel) allocPanel.style.display = isAlloc ? '' : 'none';
+  try { localStorage.setItem(SUBTAB_KEY, name); } catch {}
+  if (isAlloc) {
+    ensureAllocation().then(renderAllocation);
+  } else if (!_loaded) {
+    loadDigest();
+  }
+}
+
 export function initDigest() {
+  $('#dtab-digest')?.addEventListener('click', () => switchSubtab('digest'));
+  $('#dtab-alloc')?.addEventListener('click', () => switchSubtab('alloc'));
+  let savedSubtab = 'digest';
+  try { savedSubtab = localStorage.getItem(SUBTAB_KEY) || 'digest'; } catch {}
+  if (savedSubtab === 'alloc') switchSubtab('alloc');
+
   $('#digest-refresh')?.addEventListener('click', loadDigest);
 
   // Ticker chip clicks — delegate once on the persistent container
@@ -194,19 +222,24 @@ export function initDigest() {
     if (!selectTickerIfPresent(sym)) showToast(`${sym} nicht im aktuellen Report.`);
   });
 
+  // The bottom-nav "digest" page now hosts two sub-views; these listeners must
+  // check which one is actually showing before reloading either.
+  const digestSubtabActive = () => $('#digest-panel')?.style.display !== 'none';
+  const pageDigestActive = () => document.getElementById('page-digest')?.classList.contains('active');
+
   window.addEventListener('pwa:tab', e => {
-    if (e.detail === 'digest' && !_loaded) loadDigest();
+    if (e.detail === 'digest' && digestSubtabActive() && !_loaded) loadDigest();
   });
 
   window.addEventListener('pwa:server', e => {
-    if (e.detail && document.getElementById('page-digest')?.classList.contains('active')) {
+    if (e.detail && pageDigestActive() && digestSubtabActive()) {
       loadDigest();
     }
   });
 
   window.addEventListener('pwa:scan-done', () => {
     _loaded = false;
-    if (document.getElementById('page-digest')?.classList.contains('active')) {
+    if (pageDigestActive() && digestSubtabActive()) {
       loadDigest();
     }
   });

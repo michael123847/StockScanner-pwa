@@ -46,15 +46,16 @@ function setCurrency(v){
 
 // ---------- table variant ----------
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
+// ML is the benchmark signal column (2026-07 — Consensus, a weighted panel
+// average, wasn't adding value over the production model's own signal).
 const PRESETS = {
-  holdings: ['Ticker','Value','Δ1D','Δ21D','Cons.'],
-  chancen:  ['Ticker','Cons.','RSI','Mom14'],
+  holdings: ['Ticker','Value','Δ1D','Δ21D','ML'],
+  chancen:  ['Ticker','ML','RSI','Mom14'],
 };
 function getPreset(){
   const fallback = ()=>(DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
   try{
     const v=localStorage.getItem(TABLE_PRESET_KEY);
-    if(v==='allocation') return allocationData ? 'allocation' : fallback();
     if(['holdings','chancen'].includes(v)) return v;
   }catch{}
   return fallback();
@@ -62,12 +63,15 @@ function getPreset(){
 function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
 
 // ---------- allocation (scheme-#5 sleeve view) ----------
+// Lives in the Digest page's "Allokation" sub-tab: it's portfolio-wide and
+// list-independent (unlike everything in Übersicht, which is per-report), so
+// it isn't part of getPreset()/PRESETS above and doesn't touch #tbl.
 let allocationData = null;     // cached JSON once fetched successfully
 let allocationTried = false;   // fetch attempted (success or failure)
 
 /** Re-attempt the allocation fetch after a scan completes, if it previously
  *  failed (e.g. allocation_scheme5.json didn't exist yet on first app open) —
- *  otherwise the Allokation option would stay hidden until an app restart. */
+ *  otherwise the Allokation sub-tab would stay empty until an app restart. */
 function retryAllocationIfMissing(){
   if(!allocationData){
     allocationTried = false;
@@ -76,8 +80,9 @@ function retryAllocationIfMissing(){
 }
 
 /** Fetch Output/allocation_scheme5.json via the server; cache in a module var.
- *  Failure is silent (console.warn only) — the Allokation option simply stays hidden. */
-async function ensureAllocation(){
+ *  Failure is silent (console.warn only) — renderAllocation() shows its own
+ *  empty state. Re-renders immediately if the Allokation sub-tab is open. */
+export async function ensureAllocation(){
   if(allocationTried) return allocationData;
   allocationTried = true;
   try{
@@ -87,25 +92,9 @@ async function ensureAllocation(){
     allocationData = null;
     console.warn('allocation fetch failed:', err.message);
   }
-  populateAllocationOption();
-  if(DATA) renderOverview(); // reflect newly (un)available option / restore saved 'allocation' preset
+  const panel = $('#alloc-panel');
+  if(panel && panel.style.display !== 'none') renderAllocation();
   return allocationData;
-}
-
-function populateAllocationOption(){
-  const presetSel = $('#table-preset-sel');
-  if(!presetSel) return;
-  let opt = presetSel.querySelector('option[value="allocation"]');
-  if(allocationData){
-    if(!opt){
-      opt = document.createElement('option');
-      opt.value = 'allocation';
-      opt.textContent = 'Allokation';
-      presetSel.appendChild(opt);
-    }
-  } else if(opt){
-    opt.remove();
-  }
 }
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
@@ -204,7 +193,11 @@ function saveChartPrefs() {
 
 // ---------- formatting ----------
 const isNum = v => typeof v==='number' && isFinite(v);
-const fNum=(v,d=2)=> isNum(v)? v.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
+// Locale pinned to en-US (not `undefined`/device locale): every other number
+// formatter here (fPct, fInt, rsiCell's .toFixed) is locale-independent and
+// always dot-decimal — fNum with the device locale produced "61,4" on a
+// German/Swiss phone while the table showed "61.4" for the same value.
+const fNum=(v,d=2)=> isNum(v)? v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
 const fPct=v=> isNum(v)? (v*100).toFixed(1)+'%' : '—';
 const fInt=v=> isNum(v)? Math.round(v).toString() : '—';
 const fSig=v=>{ if(!isNum(v)) return '—';
@@ -242,7 +235,7 @@ function normalizeSchema(json){
   // Synthesize v2 shape from flat summary fields
   json.columns = [
     {key:'rule',    label:'Rule',       axis:'reference', badge:'validated'},
-    {key:'ml_risk', label:'ML (Live)',  axis:'defensive', badge:'live'},
+    {key:'ml_risk', label:'ML',         axis:'defensive'},
     {key:'dp',      label:'DP (Oracle)',axis:'reference', badge:'oracle'},
     {key:'ml',      label:'The Bet',    axis:'reference', badge:'experimental'},
   ];
@@ -295,17 +288,32 @@ function glyph(cell, col){
   else if(col && col.badge === 'oracle')  mark = `<sup title="Oracle — Rückschau, nicht handelbar">*</sup>`;
   else if(col && col.paper)               mark = `<sup title="paper only">&#x1D4AB;</sup>`;
 
-  // Production-model pill (distinct from the * star, which is reserved for
-  // oracle/experimental cards).
-  const live = (col && col.badge === 'live')
-    ? `<span class="badge-live" title="Produktions-Modell (live)">LIVE</span>` : '';
-
-  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>${live}`;
+  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>`;
 }
 
 // ---------- dynamic COLS helpers ----------
 // Returns the full column list for a given report (DATA must be set first).
 // Panel columns are injected after Δ1D; Consensus column follows panel columns.
+// Consensus is deliberately NOT a table column (2026-07 — a weighted average of
+// the panel isn't a stronger benchmark than ML itself, and it crowded a scarce
+// first-columns slot). It's still shown in the row-sheet popup, which is why
+// this lives as a standalone function rather than inline in buildCols().
+function consensusGlyph(v){
+  if(!v || typeof v.score !== 'number') return '—';
+  const sign = v.score > 0 ? '+' : '';
+  const tooltip = `Consensus ${sign}${v.score.toFixed(2)} (${v.flag})`;
+  if(v.flag === 'mixed') {
+    return `<span class="glyph ax-reference sig-hold" title="${tooltip}">Mixed ⚠</span>`;
+  }
+  let cls, label;
+  if(v.score >= 0.75)       { cls = 'sig-strong-buy';  label = 'Strong Buy'; }
+  else if(v.score >= 0.25)  { cls = 'sig-buy';         label = 'Buy'; }
+  else if(v.score > -0.25)  { cls = 'cons-neutral';    label = 'Neutral'; }
+  else if(v.score > -0.75)  { cls = 'sig-sell';        label = 'Sell'; }
+  else                      { cls = 'sig-strong-sell'; label = 'Strong Sell'; }
+  return `<span class="glyph ax-reference ${cls}" title="${tooltip}">${label}</span>`;
+}
+
 function buildCols(){
   const panelCols = DATA && DATA.columns ? DATA.columns : [];
   const staticBefore = [
@@ -320,26 +328,6 @@ function buildCols(){
     'b',
     {panelCol: col},  // metadata at index 4 for sortVal
   ]);
-  const consensusCol = [
-    'Cons.',
-    r => r.consensus || null,
-    (v) => {
-      if(!v || typeof v.score !== 'number') return '—';
-      const sign = v.score > 0 ? '+' : '';
-      const tooltip = `Consensus ${sign}${v.score.toFixed(2)} (${v.flag})`;
-      if(v.flag === 'mixed') {
-        return `<span class="glyph ax-reference sig-hold" title="${tooltip}">Mixed ⚠</span>`;
-      }
-      let cls, label;
-      if(v.score >= 0.75)       { cls = 'sig-strong-buy';  label = 'Strong Buy'; }
-      else if(v.score >= 0.25)  { cls = 'sig-buy';         label = 'Buy'; }
-      else if(v.score > -0.25)  { cls = 'cons-neutral';    label = 'Neutral'; }
-      else if(v.score > -0.75)  { cls = 'sig-sell';        label = 'Sell'; }
-      else                      { cls = 'sig-strong-sell'; label = 'Strong Sell'; }
-      return `<span class="glyph ax-reference ${cls}" title="${tooltip}">${label}</span>`;
-    },
-    'b',
-  ];
   const staticAfter = [
     ['Price',    r=>r.s['Current_Price'],     v=>fSig(v),              'n'],
     ['RSI',      r=>r.s['RSI'],               v=>rsiCell(v),           'n'],
@@ -360,7 +348,7 @@ function buildCols(){
     {isValue: true},
   ] : null;
 
-  return [...staticBefore, ...dynamicPanel, consensusCol, ...(valueCol ? [valueCol] : []), ...staticAfter];
+  return [...staticBefore, ...dynamicPanel, ...(valueCol ? [valueCol] : []), ...staticAfter];
 }
 
 // COLS is rebuilt each time a report loads; initialised with static fallback.
@@ -552,7 +540,9 @@ function drawPerf(perf){
     yfmt = v => v.toFixed(4);
   } else {
     const mag = Math.abs(yMax);
-    yfmt = mag >= 1e6 ? v => (v/1e6).toFixed(2)+'M' : v => v.toFixed(0);
+    yfmt = mag >= 1e6 ? v => (v/1e6).toFixed(2)+'M'
+         : mag >= 1e3 ? v => (v/1e3).toFixed(1)+'k'
+         : v => v.toFixed(0);
   }
 
   plot({
@@ -571,7 +561,7 @@ function drawPerf(perf){
 /** Loads the report manifest and renders the newest report. */
 export async function loadReports(){
   await loadLists();
-  ensureAllocation(); // fire-and-forget: populates the Allokation preset option once ready
+  ensureAllocation(); // fire-and-forget: pre-warms the cache so the Allokation sub-tab is ready
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
   if(file){
@@ -704,7 +694,7 @@ const EXPLAIN = {
   'Rule':        'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
   'The Bet':     'Legacy ML-Modell (höchste CAGR im Backtest, Confidence-Sizing, kein Risiko-Overlay). Aggressivste Variante — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
   'DP (Oracle)': 'Rückblick-Optimum mit demselben Cut wie das Trainingslabel (dp_state_cut): bis zur Cut-Grenze durchgezogen, danach — noch nicht "settled" nahe dem aktuellen Rand — gestrichelt als vorläufiges Look-ahead. Benchmark, kein handelbares Signal. ∗ = Oracle.',
-  'ML (Live)':   'Produktions-Modell (dp_state_cut, er=0.90). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet. Stärke: Drawdown-Kontrolle (Bärenjahre ca. −25% vs. −54% Buy&Hold), nicht Mehrrendite.',
+  'ML':          'Produktions-Modell (dp_state_cut, er=0.90). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet. Stärke: Drawdown-Kontrolle (Bärenjahre ca. −25% vs. −54% Buy&Hold), nicht Mehrrendite.',
   'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
   'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
   'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
@@ -724,8 +714,7 @@ function openRowSheet(ticker){
   const backdrop=document.createElement('div'); backdrop.className='row-sheet-backdrop';
   const sheet=document.createElement('div'); sheet.className='row-sheet';
   const panelCols=DATA&&DATA.columns?DATA.columns:[];
-  const consColDef=COLS.find(c=>c[0]==='Cons.');
-  const consHtml=consColDef?consColDef[2](consColDef[1](r),r):'';
+  const consHtml=consensusGlyph(r.consensus);
   const recsHtml=[
     ...panelCols.map(col=>{
       const g=glyph(r.panel&&r.panel[col.key],col);
@@ -785,8 +774,9 @@ function renderClassic(){
   const presetSel=$('#table-preset-sel');
   const tbl=$('#tbl');
   if(tbl) tbl.style.display='';
-  if(presetSel) presetSel.style.display=allocationData?'':'none';
-  if(presetSel && allocationData) presetSel.value=getPreset();
+  // Column-profile switcher is always available now that it only ever holds
+  // Holdings/Chancen (Allokation moved to its own Digest sub-tab).
+  if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
   renderHead(COLS);
   renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
 }
@@ -801,17 +791,7 @@ function renderCompact(){
   renderBody(presetCols,r=>openRowSheet(r.ticker));
 }
 
-// Show/hide the allocation-only DOM (header hint + hybrid block + totals footer) alongside #tbl.
-function setAllocExtrasVisible(show){
-  const metaEl=$('#alloc-meta'), hybridEl=$('#alloc-hybrid'), footEl=$('#alloc-foot');
-  if(metaEl) metaEl.style.display=show?'':'none';
-  if(hybridEl) hybridEl.style.display=show?'':'none';
-  if(footEl) footEl.style.display=show?'':'none';
-}
-
 function renderOverview(){
-  if(getPreset()==='allocation' && allocationData){ renderAllocation(); return; }
-  setAllocExtrasVisible(false);
   const v=getTableVariant();
   if(v==='auto') isPortrait()?renderCompact():renderClassic();
   else if(v==='compact') renderCompact();
@@ -828,7 +808,22 @@ const ALLOC_COLS = [
   ['Cash',          'n'],
 ];
 
-// Builds the "real money" hybrid table (small, separate <table> — not #tbl) as an HTML string.
+// Compact "CAGR X% · MaxDD Y% · Sharpe Z" line for the documented backtested
+// headline metrics (docs/ALLOCATION_STATUS.md; producer emits them statically,
+// see scripts/alloc_scheme5_live.py HYBRID_METRICS/SCHEME5_METRICS).
+function metricsBoxHtml(m){
+  if(!m) return '';
+  const cagr   = isNum(m.cagr_pct)  ? fPct(m.cagr_pct/100)  : '—';
+  const maxdd  = isNum(m.maxdd_pct) ? fPct(m.maxdd_pct/100) : '—';
+  const sharpe = isNum(m.sharpe)    ? m.sharpe.toFixed(2)   : '—';
+  return `<div class="alloc-totals alloc-metrics">
+    <span>CAGR <b>${cagr}</b></span>
+    <span>MaxDD <b>${maxdd}</b></span>
+    <span>Sharpe <b>${sharpe}</b></span>
+  </div>`;
+}
+
+// Builds the "real money" hybrid table (small, separate <table> — not #alloc-tbl) as an HTML string.
 function renderHybridHtml(h){
   const rows = (h.positions||[]).map(p=>{
     const conv = isNum(p.conviction_pct) ? fPct(p.conviction_pct/100) : '—';
@@ -844,6 +839,7 @@ function renderHybridHtml(h){
   }).join('');
   return `
     <p class="section-label">${esc(h.label||'Portfolio (real money)')}</p>
+    ${metricsBoxHtml(h.metrics)}
     <div class="table-scroll">
       <table class="alloc-hybrid-tbl">
         <thead><tr>
@@ -865,13 +861,19 @@ function renderHybridHtml(h){
   `;
 }
 
-function renderAllocation(){
-  const presetSel=$('#table-preset-sel');
-  const tbl=$('#tbl');
-  if(presetSel){ presetSel.style.display=''; presetSel.value='allocation'; }
-
+export function renderAllocation(){
+  const tbl=$('#alloc-tbl');
   const a = allocationData;
   const metaEl=$('#alloc-meta'), hybridEl=$('#alloc-hybrid'), footEl=$('#alloc-foot');
+
+  if(!a){
+    if(metaEl){ metaEl.style.display=''; metaEl.textContent='Allokation nicht verfügbar.'; }
+    if(hybridEl){ hybridEl.style.display='none'; hybridEl.innerHTML=''; }
+    if(tbl) tbl.style.display='none';
+    if(footEl){ footEl.style.display='none'; footEl.innerHTML=''; }
+    return;
+  }
+
   if(metaEl){
     metaEl.style.display='';
     metaEl.innerHTML = `<b>${esc(a.label||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}`;
@@ -880,7 +882,9 @@ function renderAllocation(){
   if(hybridEl){
     if(a.hybrid){
       hybridEl.style.display='';
-      hybridEl.innerHTML = renderHybridHtml(a.hybrid) + '<p class="section-label alloc-hint">Research-Zielschema #5</p>';
+      hybridEl.innerHTML = renderHybridHtml(a.hybrid)
+        + '<p class="section-label alloc-hint">Research-Zielschema #5</p>'
+        + metricsBoxHtml(a.scheme5_metrics);
     } else {
       hybridEl.style.display='none';
       hybridEl.innerHTML='';
@@ -890,12 +894,12 @@ function renderAllocation(){
   if(tbl) tbl.style.display='';
   const tr=document.createElement('tr');
   ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
-  const thead=$('#tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
+  const thead=$('#alloc-tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
 
   const sleeves = (a.sleeves||[]).slice().sort((x,y)=>
     ((y.hold_primary_pct||0)+(y.hold_1x_pct||0)) - ((x.hold_primary_pct||0)+(x.hold_1x_pct||0)));
 
-  const tb=$('#tbl tbody'); tb.innerHTML='';
+  const tb=$('#alloc-tbl tbody'); tb.innerHTML='';
   for(const s of sleeves){
     const row=document.createElement('tr');
     const badge2x = s.primary_is_2x ? '<span class="badge-2x">2×</span>' : '';
@@ -1150,7 +1154,7 @@ function draw(){
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
   }
 
-  // ML (Live) is a 5-band signal ({-2..+2}); scale /2 so it shares the -1..1
+  // ML is a 5-band signal ({-2..+2}); scale /2 so it shares the -1..1
   // axis with Rule and DP-Oracle (tooltip still shows the raw band value).
   const scaleHalf = a => a ? a.map(v => isNum(v) ? v / 2 : v) : a;
 
@@ -1184,7 +1188,7 @@ function draw(){
     if (dpDashed) recSeries.push({data:dpDashed,color:COL.recO,width:1.4,dash:[4,3]});
     recLegend.push([COL.recO,'DP (Oracle) ∗']);
   }
-  if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML (Live)']); }
+  if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML']); }
 
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
@@ -1243,7 +1247,7 @@ function showTip(e,S,i){
       // Tooltip rows mirror the rec-subplot checkboxes: a hidden line shouldn't
       // still report a value in the hover panel.
       ['Rule',COL.recF, showRule ? fNum(S.rec_filtered&&S.rec_filtered[i],0) : '—'],
-      ['ML (Live)',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
+      ['ML',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
       // Settled bars show the cut value; unsettled tail shows the look-ahead
       // rec_optimal with a ~ prefix (matches the dashed continuation on the chart).
       ['DP (Oracle)',COL.recO, showDp ? ((S.rec_dp_cut && isNum(S.rec_dp_cut[i]))
@@ -1359,6 +1363,11 @@ export function initViewer(){
   chartsVisible = document.getElementById('page-charts')?.classList.contains('active') || false;
   // Track Charts tab visibility — hidden page has clientWidth==0.
   window.addEventListener('pwa:tab', e=>{
+    // A chart hover tooltip has no natural "leave" event when the user taps a
+    // bottom-nav tab instead of moving the pointer off the canvas — onLeave()
+    // never fires, so #tip stays visible, floating over whatever tab opens next.
+    const tip = $('#tip'); if (tip) tip.style.display = 'none';
+    hoverIdx = null;
     chartsVisible = e.detail === 'charts';
     if(chartsVisible && selected){ lastW=0; draw(); }
     // Redraw perf graph when overview tab becomes visible (was hidden → zero clientWidth)
