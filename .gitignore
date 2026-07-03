@@ -2,3 +2,12 @@
 Thumbs.db
 *.log
 node_modules/
+
+# retired / backup artifacts — keep out of git so `git add .` is safe.
+# *_old* (not *old*) avoids collateral matches like gold/hold/fold.
+archive/
+*_old*
+*.old
+
+# throwaway inspector screenshots (tools/inspect_pwa.mjs itself stays tracked)
+tools/*.png

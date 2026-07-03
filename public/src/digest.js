@@ -35,7 +35,11 @@ function renderInline(text) {
 
 function renderMd(md) {
   let scanTime = '';
-  md = md.replace(/^<!--\s*generated:([^-]+)-->\r?\n?/m, (_, ts) => { scanTime = ts.trim(); return ''; });
+  // Non-greedy up to the first "-->": the timestamp itself is ISO
+  // (YYYY-MM-DDTHH:MM:SS) and contains dashes, so a [^-]+ capture (the
+  // previous version) could never span it — the whole match always failed,
+  // leaving the raw HTML comment as a visible line in the rendered digest.
+  md = md.replace(/^<!--\s*generated:(.+?)-->\r?\n?/m, (_, ts) => { scanTime = ts.trim(); return ''; });
 
   const lines = md.split('\n');
   const html = [];
@@ -62,6 +66,15 @@ function renderMd(md) {
     if (line.startsWith('## ')) {
       if (inList) { html.push('</ul>'); inList = false; inSell = false; }
       html.push(`<h2 class="digest-md-h2">${esc(line.slice(3))}</h2>`);
+      continue;
+    }
+
+    // Blockquote: > text — the digest uses these for standing reminders
+    // (e.g. the portfolio-rebuild note). Rendered as an accent callout box;
+    // previously fell through to prose with the literal "> " visible.
+    if (line.startsWith('> ')) {
+      if (inList) { html.push('</ul>'); inList = false; inSell = false; }
+      html.push(`<div class="digest-md-note">${renderInline(line.slice(2))}</div>`);
       continue;
     }
 

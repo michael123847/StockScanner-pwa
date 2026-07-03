@@ -65,6 +65,16 @@ function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
 let allocationData = null;     // cached JSON once fetched successfully
 let allocationTried = false;   // fetch attempted (success or failure)
 
+/** Re-attempt the allocation fetch after a scan completes, if it previously
+ *  failed (e.g. allocation_scheme5.json didn't exist yet on first app open) —
+ *  otherwise the Allokation option would stay hidden until an app restart. */
+function retryAllocationIfMissing(){
+  if(!allocationData){
+    allocationTried = false;
+    ensureAllocation();
+  }
+}
+
 /** Fetch Output/allocation_scheme5.json via the server; cache in a module var.
  *  Failure is silent (console.warn only) — the Allokation option simply stays hidden. */
 async function ensureAllocation(){
@@ -166,6 +176,7 @@ let lastW = 0;
 // ---------- chart prefs ----------
 let chartType = 'line'; // 'line' | 'candle'
 let show50 = true, show200 = true, showFib = true;
+let showRule = true, showDp = true, showMlLive = true;
 
 const CHART_PREFS_KEY = 'pwa.stocks.chartPrefs';
 
@@ -176,11 +187,19 @@ function loadChartPrefs() {
     if (typeof p.ma50 === 'boolean') show50 = p.ma50;
     if (typeof p.ma200 === 'boolean') show200 = p.ma200;
     if (typeof p.fib === 'boolean') showFib = p.fib;
+    if (typeof p.rule === 'boolean') showRule = p.rule;
+    if (typeof p.dp === 'boolean') showDp = p.dp;
+    if (typeof p.mlLive === 'boolean') showMlLive = p.mlLive;
   } catch {}
 }
 
 function saveChartPrefs() {
-  try { localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({ type: chartType, ma50: show50, ma200: show200, fib: showFib })); } catch {}
+  try {
+    localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({
+      type: chartType, ma50: show50, ma200: show200, fib: showFib,
+      rule: showRule, dp: showDp, mlLive: showMlLive,
+    }));
+  } catch {}
 }
 
 // ---------- formatting ----------
@@ -468,9 +487,19 @@ async function ensureSeries(ticker) {
 }
 
 async function apiJson(url){
-  const r = await fetch(url, { headers: authHeaders(), cache:'no-store', credentials:'omit' });
+  let r;
+  try {
+    r = await fetch(url, { headers: authHeaders(), cache:'no-store', credentials:'omit' });
+  } catch(err) {
+    // Network-level failure (DNS, connection refused, timeout) — the base is
+    // genuinely unreachable; drop the probed-base cache so the next call re-probes.
+    invalidateLocal();
+    throw err;
+  }
   if(r.status === 401){ clearToken(); throw new Error('unauthorized'); }
-  if(!r.ok){ invalidateLocal(); throw new Error('HTTP_'+r.status); }
+  // A completed HTTP response — even an error one (404: allocation/series not
+  // yet generated is routine) — proves the base IS reachable. Don't invalidate it.
+  if(!r.ok){ throw new Error('HTTP_'+r.status); }
   return r.json();
 }
 
@@ -605,6 +634,17 @@ function populateChartTicker(){
 }
 
 // ---------- table ----------
+
+/** Explanation text for a column label. The report's columns[].desc (from the
+ *  backend REGISTRY — the single source of truth for recommender texts) wins;
+ *  the local EXPLAIN map covers client-only columns (Δ1D, RSI, …) and acts as
+ *  fallback for pre-desc reports. */
+function explainFor(label){
+  const fromReport = DATA && Array.isArray(DATA.columns)
+    ? DATA.columns.find(c => c.label === label)?.desc : null;
+  return fromReport || EXPLAIN[label] || '';
+}
+
 function renderHead(cols){
   cols=cols||COLS;
   const tr=document.createElement('tr');
@@ -612,6 +652,8 @@ function renderHead(cols){
     const th=document.createElement('th');
     const key = c[0];
     th.textContent = key + (sortKey===key? (sortDir>0?' ▲':' ▼'):'');
+    const desc = explainFor(key);
+    if (desc) th.title = desc;   // desktop hover help; mobile uses the row sheet
     th.onclick=()=>{ if(sortKey===key) sortDir=-sortDir; else {sortKey=key; sortDir=1;} if(DATA) renderOverview(); };
     tr.appendChild(th);
   });
@@ -653,11 +695,16 @@ function renderBody(cols,rowOnClick){
 
 // ---------- variant renderers ----------
 
+// Column explanations. The recommender entries (Rule/ML/DP/Bet/Swing) are
+// FALLBACKS only — schema-2 reports carry authoritative texts in
+// columns[].desc, maintained in functions/panel.py REGISTRY (single source
+// of truth; edit there, not here). The metric entries (Δ1D, RSI, …) are
+// client-only display columns and are owned here.
 const EXPLAIN = {
   'Rule':        'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
   'The Bet':     'Legacy ML-Modell (höchste CAGR im Backtest, Confidence-Sizing, kein Risiko-Overlay). Aggressivste Variante — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
-  'DP (Oracle)': 'Rückblick-Optimum mit demselben Cut wie das Trainingslabel (dp_state_cut): Bars nahe dem aktuellen Rand, die noch nicht "settled" sind, bleiben leer. Benchmark, kein handelbares Signal. ∗ = Oracle.',
-  'ML (Live)':   'Produktions-Modell (er=0.90, höchstes Sharpe-Ratio im Backtest). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet.',
+  'DP (Oracle)': 'Rückblick-Optimum mit demselben Cut wie das Trainingslabel (dp_state_cut): bis zur Cut-Grenze durchgezogen, danach — noch nicht "settled" nahe dem aktuellen Rand — gestrichelt als vorläufiges Look-ahead. Benchmark, kein handelbares Signal. ∗ = Oracle.',
+  'ML (Live)':   'Produktions-Modell (dp_state_cut, er=0.90). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet. Stärke: Drawdown-Kontrolle (Bärenjahre ca. −25% vs. −54% Buy&Hold), nicht Mehrrendite.',
   'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
   'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
   'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
@@ -718,7 +765,7 @@ function openRowSheet(ticker){
     tile.addEventListener('dblclick',e=>{
       e.stopPropagation();
       const key=(tile.querySelector('.rs-metric-label')||{}).textContent||'';
-      const text=EXPLAIN[key]; if(!text) return;
+      const text=explainFor(key); if(!text) return;
       document.getElementById('rs-explain-popup')?.remove();
       const popup=document.createElement('div');
       popup.id='rs-explain-popup'; popup.className='rs-explain-popup';
@@ -930,7 +977,7 @@ function select(ticker){
     // clientWidth==0 which would produce a 1×1 buffer.
     if(chartsVisible) draw();
   }).catch(err => {
-    if (CONFIG && CONFIG.APP_VERSION) console.warn('ensureSeries failed:', err.message);
+    console.warn('ensureSeries failed:', err.message);
     // Still attempt to draw with whatever we have (may be empty)
     if(chartsVisible) draw();
   });
@@ -946,7 +993,12 @@ function renderRanges(){
 function sliceArr(a){ if(!a) return a; return viewLen===Infinity? a : a.slice(-viewLen); }
 function curSeries(){
   const r=ROWS.find(t=>t.ticker===selected); if(!r) return null;
-  const S=r.series||{}; const out={}; for(const k in S) out[k]=sliceArr(S[k]); return out;
+  // No series fetched yet (still in flight, or ensureSeries failed) → null, not
+  // an empty object, so callers' existing `if(!S) return` guards catch it. Every
+  // chart is keyed off S.date; without it there's nothing plottable.
+  const S=r.series;
+  if(!S || !Array.isArray(S.date) || !S.date.length) return null;
+  const out={}; for(const k in S) out[k]=sliceArr(S[k]); return out;
 }
 function legend(el, items){ el.innerHTML = items.map(([c,t,dash])=>`<span><i style="border-color:${c};border-top-style:${dash?'dashed':'solid'}"></i>${esc(t)}</span>`).join(''); }
 
@@ -1056,16 +1108,22 @@ function draw(){
   const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
 
   // Build overlay series (MA + Fib) respecting checkbox state.
+  // hasData: an array can exist (right length) but be 100% null — a 200 MA
+  // needs >=200 bars, so a young ticker (e.g. a fund with <200 days of price
+  // history) has an all-null ma200/fib_* column. `S.ma200` alone is truthy
+  // (it's a non-empty array either way), so without this the legend used to
+  // claim "200 MA"/"Fib" were plotted when nothing actually drew.
+  const hasData = a => Array.isArray(a) && a.some(isNum);
   const overlaySeries = [];
   const legendItems = [];
-  if (show50 && S.ma50) { overlaySeries.push({data:fillSteps(S.ma50),color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
-  if (show200 && S.ma200) { overlaySeries.push({data:fillSteps(S.ma200),color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
+  if (show50 && hasData(S.ma50)) { overlaySeries.push({data:fillSteps(S.ma50),color:COL.ma50,width:1.4}); legendItems.push([COL.ma50,'50 MA']); }
+  if (show200 && hasData(S.ma200)) { overlaySeries.push({data:fillSteps(S.ma200),color:COL.ma200,width:1.4}); legendItems.push([COL.ma200,'200 MA']); }
   if (showFib) {
     let _fibLeg = false;
-    if (S.fib_236) { overlaySeries.push({data:fillSteps(S.fib_236),color:COL.fib[0],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[0],'Fib',1]); _fibLeg=true; } }
-    if (S.fib_382) overlaySeries.push({data:fillSteps(S.fib_382),color:COL.fib[1],width:1,dash:[5,4]});
-    if (S.fib_618) overlaySeries.push({data:fillSteps(S.fib_618),color:COL.fib[2],width:1,dash:[5,4]});
-    if (S.fib_764) overlaySeries.push({data:fillSteps(S.fib_764),color:COL.fib[3],width:1,dash:[5,4]});
+    if (hasData(S.fib_236)) { overlaySeries.push({data:fillSteps(S.fib_236),color:COL.fib[0],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[0],'Fib',1]); _fibLeg=true; } }
+    if (hasData(S.fib_382)) { overlaySeries.push({data:fillSteps(S.fib_382),color:COL.fib[1],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[1],'Fib',1]); _fibLeg=true; } }
+    if (hasData(S.fib_618)) { overlaySeries.push({data:fillSteps(S.fib_618),color:COL.fib[2],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[2],'Fib',1]); _fibLeg=true; } }
+    if (hasData(S.fib_764)) { overlaySeries.push({data:fillSteps(S.fib_764),color:COL.fib[3],width:1,dash:[5,4]}); if(!_fibLeg){ legendItems.push([COL.fib[3],'Fib',1]); _fibLeg=true; } }
   }
 
   if (useCandle) {
@@ -1095,17 +1153,43 @@ function draw(){
   // ML (Live) is a 5-band signal ({-2..+2}); scale /2 so it shares the -1..1
   // axis with Rule and DP-Oracle (tooltip still shows the raw band value).
   const scaleHalf = a => a ? a.map(v => isNum(v) ? v / 2 : v) : a;
+
+  // DP (Oracle): solid over the settled region (rec_dp_cut, which skips fillSteps
+  // so its trailing NaN cut stays a gap), then a DASHED continuation over the
+  // unsettled tail using the raw look-ahead rec_optimal. The solid→dashed handoff
+  // marks the dp_settled_boundary (the "cut"): the oracle stays visible near the
+  // live edge but is clearly flagged as not-yet-settled / not handelbar.
+  const dpSolid = S.rec_dp_cut;
+  let dpDashed = null;
+  if (dpSolid && S.rec_optimal) {
+    let lastSettled = -1;
+    for (let i = dpSolid.length - 1; i >= 0; i--) { if (isNum(dpSolid[i])) { lastSettled = i; break; } }
+    // Draw a dashed tail whenever the cut blanks bars before the last one.
+    // lastSettled === -1 means the whole visible window is unsettled (e.g. a calm
+    // name whose settled boundary is off-screen to the left) → dash the entire
+    // look-ahead line. Otherwise dash only the trailing tail, starting at the last
+    // settled bar so it joins the solid segment. A ticker with no cut at all
+    // (lastSettled === len-1) gets no tail.
+    if (lastSettled < S.rec_optimal.length - 1) {
+      dpDashed = new Array(S.rec_optimal.length).fill(null);
+      for (let i = Math.max(0, lastSettled); i < S.rec_optimal.length; i++) dpDashed[i] = S.rec_optimal[i];
+    }
+  }
+
+  const recSeries = [];
+  const recLegend = [];
+  if (showRule) { recSeries.push({data:fillSteps(S.rec_filtered),color:COL.recF,width:1.6}); recLegend.push([COL.recF,'Rule']); }
+  if (showDp) {
+    recSeries.push({data:dpSolid,color:COL.recO,width:1.4});
+    if (dpDashed) recSeries.push({data:dpDashed,color:COL.recO,width:1.4,dash:[4,3]});
+    recLegend.push([COL.recO,'DP (Oracle) ∗']);
+  }
+  if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML (Live)']); }
+
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
-    series:[
-      {data:fillSteps(S.rec_filtered),color:COL.recF,width:1.6},
-      // DP (Oracle) intentionally skips fillSteps: the trailing NaN cut (bars not
-      // yet "settled" per dp_settled_boundary) must render as a gap, not be
-      // forward-filled — that gap is the point (oracle isn't handelbar near the edge).
-      {data:S.rec_dp_cut,color:COL.recO,width:1.4},
-      {data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8},
-    ]});
-  legend($('#lg-rec'),[[COL.recF,'Rule'],[COL.recO,'DP (Oracle) ∗'],[COL.recM,'ML (Live)']]);
+    series: recSeries });
+  legend($('#lg-rec'), recLegend);
 
   charts.rsi = plot({ canvas:$('#c-rsi'), x:S.date, yMin:0, yMax:100, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:70,color:'#ff5c5c'},{y:30,color:'#2ecc71'}],
@@ -1113,6 +1197,7 @@ function draw(){
 }
 
 // ---------- shared hover (mouse + touch) ----------
+let _drawPending = false;
 function onMove(e){
   const S=curSeries(); if(!S) return; const n=(S.date||[]).length; if(!n) return;
   const cv=e.currentTarget, rect=cv.getBoundingClientRect(); const g=charts.price&&charts.price._geom;
@@ -1120,7 +1205,17 @@ function onMove(e){
   // Support both mouse and touch events.
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   let idx=Math.round((clientX-rect.left-PL)/plotW*(n-1));
-  idx=Math.max(0,Math.min(n-1,idx)); hoverIdx=idx; draw(); showTip(e,S,idx);
+  idx=Math.max(0,Math.min(n-1,idx));
+  const idxChanged = idx !== hoverIdx;
+  hoverIdx = idx;
+  // draw() redraws all 3 canvases from scratch — only worth doing when the
+  // crosshair actually moved to a different bar, and coalesced to at most one
+  // redraw per animation frame even if move events fire faster than that.
+  if(idxChanged && !_drawPending){
+    _drawPending = true;
+    requestAnimationFrame(() => { _drawPending = false; draw(); });
+  }
+  showTip(e,S,idx);  // cheap DOM update — keeps following the cursor every move
 }
 function showTip(e,S,i){
   const tip=$('#tip');
@@ -1145,8 +1240,15 @@ function showTip(e,S,i){
       ['50 MA',COL.ma50,fSig(S.ma50&&S.ma50[i])],
       ['200 MA',COL.ma200,fSig(S.ma200&&S.ma200[i])],
       ['RSI',COL.rsi,fNum(S.rsi&&S.rsi[i],1)],
-      ['ML (Live)',COL.recM,fNum(S.rec_ml_live&&S.rec_ml_live[i],0)],
-      ['DP (Oracle)',COL.recO,fNum(S.rec_dp_cut&&S.rec_dp_cut[i],0)],
+      // Tooltip rows mirror the rec-subplot checkboxes: a hidden line shouldn't
+      // still report a value in the hover panel.
+      ['Rule',COL.recF, showRule ? fNum(S.rec_filtered&&S.rec_filtered[i],0) : '—'],
+      ['ML (Live)',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
+      // Settled bars show the cut value; unsettled tail shows the look-ahead
+      // rec_optimal with a ~ prefix (matches the dashed continuation on the chart).
+      ['DP (Oracle)',COL.recO, showDp ? ((S.rec_dp_cut && isNum(S.rec_dp_cut[i]))
+        ? fNum(S.rec_dp_cut[i],0)
+        : (S.rec_optimal && isNum(S.rec_optimal[i]) ? '~'+fNum(S.rec_optimal[i],0) : '—')) : '—'],
     ].filter(r=>r[2]!=='—').map(([k,c,v])=>`<div><span class="k" style="background:${c}"></span>${k}: <b>${v}</b></div>`).join('');
   }
   tip.innerHTML=`<div class="d">${esc((S.date&&S.date[i])||'')}</div>${rows}`;
@@ -1163,8 +1265,14 @@ function showTip(e,S,i){
 function onLeave(){ hoverIdx=null; $('#tip').style.display='none'; draw(); }
 
 // ---------- init ----------
+let _filterTimer = null;
 export function initViewer(){
-  $('#filter').oninput=()=>{ if(DATA) renderOverview(); };
+  window.addEventListener('pwa:scan-done', retryAllocationIfMissing);
+
+  $('#filter').oninput=()=>{
+    clearTimeout(_filterTimer);
+    _filterTimer = setTimeout(() => { if(DATA) renderOverview(); }, 150);
+  };
 
   // Currency selector — re-render table and perf graph without refetch
   const currSel = $('#currency-sel');
@@ -1200,6 +1308,12 @@ export function initViewer(){
   if (ma50El) ma50El.checked = show50;
   if (ma200El) ma200El.checked = show200;
   if (fibEl) fibEl.checked = showFib;
+  const ruleEl = document.getElementById('chk-rule');
+  const dpEl = document.getElementById('chk-dp');
+  const mlLiveEl = document.getElementById('chk-mllive');
+  if (ruleEl) ruleEl.checked = showRule;
+  if (dpEl) dpEl.checked = showDp;
+  if (mlLiveEl) mlLiveEl.checked = showMlLive;
 
   // Wire chart-type buttons
   document.getElementById('btn-line')?.addEventListener('click', () => {
@@ -1224,6 +1338,17 @@ export function initViewer(){
       if (id === 'chk-ma50') show50 = e.target.checked;
       if (id === 'chk-ma200') show200 = e.target.checked;
       if (id === 'chk-fib') showFib = e.target.checked;
+      saveChartPrefs();
+      draw();
+    });
+  });
+
+  // Wire recommendation-subplot checkboxes
+  ['chk-rule', 'chk-dp', 'chk-mllive'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', e => {
+      if (id === 'chk-rule') showRule = e.target.checked;
+      if (id === 'chk-dp') showDp = e.target.checked;
+      if (id === 'chk-mllive') showMlLive = e.target.checked;
       saveChartPrefs();
       draw();
     });

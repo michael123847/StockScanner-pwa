@@ -91,6 +91,11 @@
       <div class="legend" id="lg-price"></div>
       <div class="chartwrap"><canvas id="c-price"></canvas></div>
 
+      <div class="overlay-checks" id="rec-checks">
+        <label><input type="checkbox" id="chk-rule" checked> Rule</label>
+        <label><input type="checkbox" id="chk-dp" checked> DP (Oracle)</label>
+        <label><input type="checkbox" id="chk-mllive" checked> ML (Live)</label>
+      </div>
       <div class="legend" id="lg-rec"></div>
       <div class="chartwrap"><canvas id="c-rec"></canvas></div>
 
@@ -179,6 +184,9 @@
 
 <div id="tip"></div>
 
+<!-- version.js first (classic script, sets self.__APP_VERSION) — the single
+     version bump point shared with sw.js; src/config.js reads it. -->
+<script src="version.js"></script>
 <script type="module" src="src/main.js"></script>
 </body>
 </html>

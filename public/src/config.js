@@ -14,8 +14,10 @@
  *   are cached and subsequent cold starts (incl. off-home via Tailscale) work.
  */
 export const CONFIG = {
-  // Bump together with VERSION in sw.js on every deploy.
-  APP_VERSION: 'v1.7.4',
+  // Single source of truth: version.js (loaded before this module by
+  // index.html; sw.js importScripts the same file). Bump ONLY version.js.
+  // Fallback covers non-browser/module-only contexts (tests, tooling).
+  APP_VERSION: globalThis.__APP_VERSION || 'dev',
 
   // Only the generic mDNS hostname is public; lan_ip + ts come from
   // /api/stocks/config and are cached in localStorage (see siteConfig.js).

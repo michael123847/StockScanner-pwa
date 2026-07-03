@@ -11,9 +11,11 @@
  * NEVER intercepted: they carry the Authorization header and must always return
  * fresh data, so caching them here would break auth and show stale reports.
  *
- * Keep VERSION in sync with CONFIG.APP_VERSION in src/config.js.
+ * VERSION comes from version.js — the single bump point, shared with
+ * CONFIG.APP_VERSION (src/config.js reads the same file in window scope).
  */
-const VERSION   = 'v1.7.4';
+importScripts('./version.js');
+const VERSION   = self.__APP_VERSION;
 // App-specific prefix avoids cross-contamination with other PWAs on the same
 // GitHub Pages origin whose caches are visible via the shared caches API.
 const APP_SHELL = 'ss-shell-' + VERSION;
@@ -24,6 +26,7 @@ const SHELL_ASSETS = [
   './index.html',
   './style.css',
   './manifest.webmanifest',
+  './version.js',
   './src/main.js',
   './src/config.js',
   './src/auth.js',

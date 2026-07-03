@@ -1,0 +1,24 @@
+{
+  "name": "stockscanner-pwa",
+  "version": "1.0.0",
+  "description": "An installable Progressive Web App that shows the latest [StockScanner](../StockScanner) results — the summary table and the dependency-free price / recommendation / RSI charts from `viewer.html`, wrapped in an offline-capable app shell.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michael123847/StockScanner-pwa.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/michael123847/StockScanner-pwa/issues"
+  },
+  "homepage": "https://github.com/michael123847/StockScanner-pwa#readme",
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
