@@ -147,6 +147,10 @@ await context.route('**/api/stocks/**', async route => {
       const f = path.join(OUTPUT_DIR, 'allocation_scheme5.json');
       return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
     }
+    if (ep === 'metrics') {
+      const f = path.join(OUTPUT_DIR, 'backtest_metrics.json');
+      return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
+    }
     if (ep === 'report') {
       const file = u.searchParams.get('file');
       const f = file && path.join(OUTPUT_DIR, path.basename(file));

@@ -48,15 +48,19 @@ function setCurrency(v){
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 // ML is the benchmark signal column (2026-07 — Consensus, a weighted panel
 // average, wasn't adding value over the production model's own signal).
+// {panelKey:'ml_risk'} resolves the column by its stable REGISTRY key rather
+// than its display label — a stale report that still says "ML (Live)" (label
+// drift, e.g. before a rescan picks up a backend rename) would silently drop
+// a literal-'ML' match and the column would vanish from the preset.
 const PRESETS = {
-  holdings: ['Ticker','Value','Δ1D','Δ21D','ML'],
-  chancen:  ['Ticker','ML','RSI','Mom14'],
+  holdings: ['Ticker','Value','Δ1D','Δ21D', {panelKey:'ml_risk'}],
+  chancen:  ['Ticker', {panelKey:'ml_risk'}, 'RSI','Mom14'],
 };
 function getPreset(){
   const fallback = ()=>(DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
   try{
     const v=localStorage.getItem(TABLE_PRESET_KEY);
-    if(['holdings','chancen'].includes(v)) return v;
+    if(['holdings','chancen','backtest'].includes(v)) return v;
   }catch{}
   return fallback();
 }
@@ -96,6 +100,29 @@ export async function ensureAllocation(){
   if(panel && panel.style.display !== 'none') renderAllocation();
   return allocationData;
 }
+
+// ---------- backtest metrics (slim per-ticker, deployed model) ----------
+// Output/backtest_metrics.json via scripts/backtest_metrics.py — persistent
+// until that script is rerun after a model retrain (own model_id field).
+// Computed once per ticker; covers every list, so no per-report refetch.
+let metricsData = null;
+let metricsTried = false;
+
+async function ensureMetrics(){
+  if(metricsTried) return metricsData;
+  metricsTried = true;
+  try{
+    const url = getActiveBase() + CONFIG.STOCKS_METRICS_PATH;
+    metricsData = await apiJson(url);
+  }catch(err){
+    metricsData = null;
+    console.warn('backtest metrics fetch failed:', err.message);
+  }
+  if(getPreset()==='backtest' && DATA) renderOverview();
+  return metricsData;
+}
+function metricsFor(ticker){ return (metricsData && metricsData.tickers && metricsData.tickers[ticker]) || null; }
+
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
   try{ const v=localStorage.getItem(TABLE_VARIANT_KEY); if(['auto','classic','compact'].includes(v)) return v; }catch{}
@@ -371,7 +398,31 @@ function pctCell(v){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos'; return
 function rsiCell(v){ if(!isNum(v)) return '—'; const c = v>=70?'neg':(v<=30?'pos':''); return `<span class="num ${c}">${v.toFixed(1)}</span>`; }
 function tickerCell(r){ return r.tag? `<a href="${esc(r.tag)}" target="_blank" rel="noopener">${esc(r.ticker)}</a>` : esc(r.ticker); }
 function tickerCellSub(r){ const base=r.tag?`<a href="${esc(r.tag)}" target="_blank" rel="noopener">${esc(r.ticker)}</a>`:esc(r.ticker); return `<div>${base}</div><div class="cell-sub">${esc(r.name)}</div>`; }
-function applyPresetCols(){ const allow=PRESETS[getPreset()]; return COLS.filter(c=>allow.includes(c[0])).map(c=>c[0]==='Ticker'?['Ticker',r=>r.ticker,(v,r)=>tickerCellSub(r),'l']:c); }
+function applyPresetCols(){
+  const allow=PRESETS[getPreset()];
+  if(!allow) return BACKTEST_COLS; // preset==='backtest' — a distinct column set, not a COLS filter
+  return COLS.filter(c=>{
+    const panelKey = c[4] && c[4].panelCol && c[4].panelCol.key;
+    return allow.some(a => typeof a==='string' ? a===c[0] : (panelKey && a.panelKey===panelKey));
+  }).map(c=>c[0]==='Ticker'?['Ticker',r=>r.ticker,(v,r)=>tickerCellSub(r),'l']:c);
+}
+
+// Signed delta cell: green/red by sign, plain fixed-point (not a percent —
+// used for Sharpe deltas, which are ratio differences, not returns).
+function numDeltaCell(v,d=2){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos'; const s=v>0?'+':''; return `<span class="num ${c}">${s}${v.toFixed(d)}</span>`; }
+
+// "Backtest" column preset: slim per-ticker metrics from the deployed model
+// (scripts/backtest_metrics.py via ensureMetrics()), independent of the
+// current report's panel data — works for every list, including ones with no
+// holdings/panel columns at all (e.g. Indices).
+const BACKTEST_COLS = [
+  ['Ticker',     r=>r.ticker,                          (v,r)=>tickerCellSub(r),        'l'],
+  ['CAGR B&H',   r=>metricsFor(r.ticker)?.cagr_bh,      v=>fPct(v),                     'n'],
+  ['Sharpe B&H', r=>metricsFor(r.ticker)?.sharpe_bh,    v=>isNum(v)?v.toFixed(2):'—',   'n'],
+  ['ΔCAGR',      r=>metricsFor(r.ticker)?.d_cagr,       v=>pctCell(v),                  'n'],
+  ['ΔSharpe',    r=>metricsFor(r.ticker)?.d_sharpe,     v=>numDeltaCell(v),             'n'],
+  ['MaxDD',      r=>metricsFor(r.ticker)?.maxdd_ml,     v=>fPct(v),                     'n'],
+];
 
 // ---------- error surface ----------
 export function setViewerError(msg){
@@ -562,6 +613,7 @@ function drawPerf(perf){
 export async function loadReports(){
   await loadLists();
   ensureAllocation(); // fire-and-forget: pre-warms the cache so the Allokation sub-tab is ready
+  ensureMetrics();    // fire-and-forget: pre-warms so the Backtest preset is ready on first pick
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
   if(file){
@@ -706,6 +758,11 @@ const EXPLAIN = {
   '50DMA':    '50-Tage-Durchschnittskurs. Mittelfristiger Trendindikator.',
   '↕200':     'Abstand zum 200DMA in %. Positiv = Kurs liegt über dem Langfristdurchschnitt.',
   'Value':     'Portfoliowert in der gewählten Währung (Bestand × aktueller Kurs, umgerechnet).',
+  'CAGR B&H':   'Jährliche Rendite bei reinem Halten (Buy & Hold) über die gesamte gespeicherte Historie.',
+  'Sharpe B&H': 'Sharpe-Ratio bei reinem Halten über die gesamte Historie.',
+  'ΔCAGR':      'CAGR-Differenz: ML-Modell minus Buy & Hold. Positiv = Modell schlägt reines Halten.',
+  'ΔSharpe':    'Sharpe-Differenz: ML-Modell minus Buy & Hold. Positiv = besseres risikoadjustiertes Ergebnis.',
+  'MaxDD':      'Maximaler Drawdown des ML-Modells (schlimmster Rückgang vom letzten Hoch). Meist die robustere Stärke als die Rendite — siehe ΔCAGR.',
 };
 
 function openRowSheet(ticker){
@@ -728,6 +785,13 @@ function openRowSheet(ticker){
   const metricsHtml=COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('');
+  // Backtest metrics: shown regardless of the active table preset (a quick
+  // look without switching), but only once ensureMetrics() has resolved for
+  // this ticker — otherwise the section is simply omitted, not dashed-out.
+  const btRow = metricsFor(ticker);
+  const backtestHtml = btRow ? BACKTEST_COLS.slice(1)
+    .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
+    .join('') : '';
   sheet.innerHTML=`<div class="row-sheet-panel">
     <div class="row-sheet-header">
       <div class="row-sheet-title">${tickerCell(r)}</div>
@@ -742,6 +806,10 @@ function openRowSheet(ticker){
       <div class="row-sheet-section-label">Kennzahlen</div>
       <div class="rs-metrics">${metricsHtml}</div>
     </div>
+    ${backtestHtml ? `<div class="row-sheet-section">
+      <div class="row-sheet-section-label">Backtest (Ø deployed model)</div>
+      <div class="rs-metrics">${backtestHtml}</div>
+    </div>` : ''}
     <button class="btn btn-primary row-sheet-chart-btn">&rarr; Chart</button>
   </div>`;
   document.body.appendChild(backdrop); document.body.appendChild(sheet);
@@ -775,10 +843,15 @@ function renderClassic(){
   const tbl=$('#tbl');
   if(tbl) tbl.style.display='';
   // Column-profile switcher is always available now that it only ever holds
-  // Holdings/Chancen (Allokation moved to its own Digest sub-tab).
+  // Holdings/Chancen/Backtest (Allokation moved to its own Digest sub-tab).
   if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
-  renderHead(COLS);
-  renderBody(COLS,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
+  // Holdings/Chancen don't affect the desktop table (full COLS always shows —
+  // they're a mobile column-count concession); Backtest is a genuinely
+  // different column set, so it applies on desktop too.
+  const cols = getPreset()==='backtest' ? BACKTEST_COLS : COLS;
+  if(getPreset()==='backtest') ensureMetrics();
+  renderHead(cols);
+  renderBody(cols,r=>{ select(r.ticker); window.dispatchEvent(new CustomEvent('pwa:navigate',{detail:'charts'})); });
 }
 
 function renderCompact(){
@@ -786,6 +859,7 @@ function renderCompact(){
   const tbl=$('#tbl');
   if(tbl) tbl.style.display='';
   if(presetSel){ presetSel.style.display=''; presetSel.value=getPreset(); }
+  if(getPreset()==='backtest') ensureMetrics();
   const presetCols=applyPresetCols();
   renderHead(presetCols);
   renderBody(presetCols,r=>openRowSheet(r.ticker));
@@ -858,6 +932,8 @@ function renderHybridHtml(h){
       <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band</span>
     </div>
     ${h.note?`<p class="hint alloc-hint">${esc(h.note)}</p>`:''}
+    <p class="hint alloc-hint">Per-Ticker-Evidenz (CAGR/Sharpe vs. Buy&amp;Hold, MaxDD) für jede
+      Position: Übersicht → Spalten-Profil <b>Backtest</b>.</p>
   `;
 }
 

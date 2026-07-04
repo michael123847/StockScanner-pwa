@@ -41,6 +41,7 @@ export const CONFIG = {
   STOCKS_DIGEST_MD_PATH: '/api/stocks/digest.md',  // GET → digest_latest.md as text/markdown
   STOCKS_PORTFOLIO_SERIES_PATH: '/api/stocks/portfolio_series', // GET ?list=<label>
   STOCKS_ALLOCATION_PATH: '/api/stocks/allocation', // GET → allocation_scheme5.json (scheme-#5 sleeves)
+  STOCKS_METRICS_PATH: '/api/stocks/metrics', // GET → backtest_metrics.json (per-ticker slim backtest)
 
   // Abort a health check after this long to avoid long waits on unreachable
   // candidates while probeBase() races them.
