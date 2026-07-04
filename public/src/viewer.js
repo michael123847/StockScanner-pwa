@@ -763,6 +763,7 @@ const EXPLAIN = {
   'ΔCAGR':      'CAGR-Differenz: ML-Modell minus Buy & Hold. Positiv = Modell schlägt reines Halten.',
   'ΔSharpe':    'Sharpe-Differenz: ML-Modell minus Buy & Hold. Positiv = besseres risikoadjustiertes Ergebnis.',
   'MaxDD':      'Maximaler Drawdown des ML-Modells (schlimmster Rückgang vom letzten Hoch). Meist die robustere Stärke als die Rendite — siehe ΔCAGR.',
+  'Order':      'Vorschlag für Ordertyp (Market/Limit) und Preis, abgeleitet aus Support-/Widerstandsniveaus (MA50, Bollinger-Bänder, Fibonacci) beim aktuellen ML-Signal. Nur ein Hinweis, keine Anlageberatung.',
 };
 
 function openRowSheet(ticker){
@@ -792,6 +793,16 @@ function openRowSheet(ticker){
   const backtestHtml = btRow ? BACKTEST_COLS.slice(1)
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('') : '';
+  // Order-execution hint: only present when the report carries one (active Buy/Sell
+  // on the production ML signal) -- see functions/order_hint.py.
+  const oh = r.order_hint;
+  const orderHtml = oh ? `<div class="row-sheet-section">
+    <div class="row-sheet-section-label">Ordervorschlag</div>
+    <div class="rs-metrics">
+      <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price):''}</span></div>
+    </div>
+    <div class="rs-order-rationale">${esc(oh.rationale||'')}</div>
+  </div>` : '';
   sheet.innerHTML=`<div class="row-sheet-panel">
     <div class="row-sheet-header">
       <div class="row-sheet-title">${tickerCell(r)}</div>
@@ -810,6 +821,7 @@ function openRowSheet(ticker){
       <div class="row-sheet-section-label">Backtest (Ø deployed model)</div>
       <div class="rs-metrics">${backtestHtml}</div>
     </div>` : ''}
+    ${orderHtml}
     <button class="btn btn-primary row-sheet-chart-btn">&rarr; Chart</button>
   </div>`;
   document.body.appendChild(backdrop); document.body.appendChild(sheet);
