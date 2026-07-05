@@ -20,6 +20,23 @@ let LISTS = [];           // [{key, label, builtin, hasJson, count}]
 let _activeList = 'Portfolio';
 const _state = {};        // keyed by list key: {loaded, dirty}
 
+// Research lists (Input/research/*.csv) -- hidden by default, revealed via
+// the "…" chip appended after "+" in buildListTabs(). Fetched once, cached.
+let _researchLists = null;   // [{key,label}] or null (not yet fetched)
+let _showResearch = false;
+
+async function ensureResearchLists() {
+  if (_researchLists !== null) return _researchLists;
+  try {
+    const r = await fetch(
+      getActiveBase() + CONFIG.STOCKS_RESEARCH_LISTS_PATH,
+      { headers: authHeaders(), cache: 'no-store', credentials: 'omit' },
+    );
+    _researchLists = r.ok ? await r.json() : [];
+  } catch { _researchLists = []; }
+  return _researchLists;
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 let $body, $toast, $toolbar, $filterInput;
 
@@ -560,6 +577,30 @@ function buildListTabs() {
   addBtn.title = 'Neue Liste';
   addBtn.addEventListener('click', createList);
   wrap.appendChild(addBtn);
+
+  const researchBtn = document.createElement('button');
+  researchBtn.className = 'pf-list-tab pf-list-research' + (_showResearch ? ' active' : '');
+  researchBtn.textContent = '…';
+  researchBtn.title = 'Research-Listen ein-/ausblenden';
+  researchBtn.addEventListener('click', () => {
+    _showResearch = !_showResearch;
+    if (_showResearch) ensureResearchLists().then(buildListTabs);
+    else buildListTabs();
+  });
+  wrap.appendChild(researchBtn);
+
+  if (_showResearch && _researchLists) {
+    const knownKeys = new Set(LISTS.map(l => l.key));
+    _researchLists.filter(r => !knownKeys.has(r.key)).forEach(r => {
+      const isActive = r.key === _activeList;
+      const btn = document.createElement('button');
+      btn.className = 'pf-list-tab pf-list-tab-research' + (isActive ? ' active' : '');
+      btn.textContent = r.label;
+      btn.dataset.list = r.key;
+      btn.addEventListener('click', () => switchList(r.key));
+      wrap.appendChild(btn);
+    });
+  }
 }
 
 function switchList(key) {
@@ -568,6 +609,7 @@ function switchList(key) {
     if (!confirm('Ungespeicherte Änderungen für ' + _activeList + ' verwerfen?')) return;
     _state[_activeList].dirty = false;
   }
+  if (!_state[key]) _state[key] = { loaded: false, dirty: false };
   _activeList = key;
   buildListTabs();
   load(key);

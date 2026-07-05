@@ -215,10 +215,15 @@ await context.route('**/api/stocks/**', async route => {
       return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
     }
     if (ep === 'portfolio') {
-      // Mirrors server.js: CSV if present, else .json, else 404 — returns the
-      // parsed array directly (portfolio.js calls .map() on the response).
+      // Mirrors server.js's resolveListStem(): root Input/<key> if it exists,
+      // else Input/research/<key> — returns the parsed array directly
+      // (portfolio.js calls .map() on the response).
       const list = u.searchParams.get('list') || 'Portfolio';
-      const base = path.join(INPUT_DIR, path.basename(list));
+      const key  = path.basename(list);
+      let base = path.join(INPUT_DIR, key);
+      if (!existsSync(base + '.csv') && !existsSync(base + '.json')) {
+        base = path.join(INPUT_DIR, 'research', key);
+      }
       if (existsSync(base + '.csv')) return jres(route, csvParse(await readFile(base + '.csv', 'utf-8')));
       if (existsSync(base + '.json')) return jres(route, JSON.parse(await readFile(base + '.json', 'utf-8')));
       return jres(route, { error: 'not found' }, 404);

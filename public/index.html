@@ -56,6 +56,11 @@
         <table id="alloc-tbl" style="display:none"><thead></thead><tbody></tbody></table>
       </div>
       <div id="alloc-foot" style="display:none"></div>
+      <div id="alloc-addcash-panel" class="alloc-addcash-panel" style="display:none">
+        <label for="alloc-addcash" class="section-label">Neue Einzahlung</label>
+        <input id="alloc-addcash" type="number" min="0" step="1" inputmode="decimal" placeholder="Betrag…">
+        <div id="alloc-addcash-out"></div>
+      </div>
       <div id="alloc-trades" style="display:none"></div>
     </div>
   </section>
@@ -66,7 +71,6 @@
       <div id="meta" class="meta"></div>
       <select id="report" title="Liste wählen" style="display:none"></select>
       <select id="report-date" title="Datum wählen" style="display:none"></select>
-      <button id="report-research-toggle" class="btn" title="Research-Listen ein-/ausblenden" style="display:none">…</button>
       <select id="currency-sel" title="Anzeigewährung" style="display:none">
         <option value="CHF">CHF</option>
         <option value="EUR">EUR</option>

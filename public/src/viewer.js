@@ -254,6 +254,74 @@ function computeSchemeTrades(schemeKey){
   return {total, rows, fx: holdings.fx, excludedHeld};
 }
 
+// Inverse of convertCHF: interpret a value typed in the display currency as CHF.
+function toCHF(amount, currency, fx){
+  if(!isNum(amount)) return null;
+  if(currency === 'CHF') return amount;
+  if(!fx) return null;
+  if(currency === 'USD') return isNum(fx.USDCHF) ? amount * fx.USDCHF : null;
+  if(currency === 'EUR') return isNum(fx.EURCHF) ? amount * fx.EURCHF : null;
+  if(currency === 'GBP') return isNum(fx.GBPCHF) ? amount * fx.GBPCHF : null;
+  if(currency === 'BTC') return (isNum(fx.BTCUSD) && isNum(fx.USDCHF)) ? amount * fx.BTCUSD * fx.USDCHF : null;
+  return null;
+}
+
+// Additive-only recommendation for where NEW cash should go to move the
+// portfolio toward the selected scheme's target weights — never a sell,
+// unlike computeSchemeTrades(). Shortfall-proportional fill: every target
+// under its target value gets funded first; if the cash covers every
+// shortfall, the leftover is spread pro-rata by target weight instead of
+// sitting idle. Same holdings pool (exclusions applied) and dust threshold
+// as computeSchemeTrades() so the two tables agree on "what counts".
+function computeAddCash(schemeKey, cashChf){
+  const built = buildSchemeTargets(schemeKey);
+  const holdings = portfolioHoldingsData;
+  if(!built || !holdings || !Array.isArray(holdings.tickers)) return null;
+  if(!isNum(cashChf) || cashChf <= 0) return null;
+
+  const exclude = portfolioExcludeData || new Set();
+  const byTicker = new Map();
+  let currentTotal = 0;
+  for(const t of holdings.tickers){
+    const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
+    if(exclude.has(t.ticker)) continue;
+    if(v > 0){ byTicker.set(t.ticker, {value: v, name: t.name}); currentTotal += v; }
+  }
+
+  const newTotal = currentTotal + cashChf;
+  const DUST_PCT = 0.5; // same threshold as computeSchemeTrades
+
+  // Build every target leg (incl. the cash/Geldmarkt leg) with its shortfall.
+  const legs = [];
+  for(const [tk, {name, pct}] of built.targets){
+    const targetVal = newTotal * pct / 100;
+    const curVal = (byTicker.get(tk)||{}).value || 0;
+    legs.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, pct, curVal, shortfall: Math.max(0, targetVal - curVal)});
+  }
+  if(built.cashPct > 0){
+    legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, shortfall: Math.max(0, newTotal * built.cashPct / 100)});
+  }
+
+  const sumShortfall = legs.reduce((s, l) => s + l.shortfall, 0);
+  let rows;
+  if(sumShortfall <= 0){
+    // No shortfalls at all (portfolio already at/above every target) — spread
+    // the whole amount pro-rata by weight since there's nothing to "catch up".
+    const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct}));
+  } else if(sumShortfall <= cashChf){
+    const leftover = cashChf - sumShortfall;
+    const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct}));
+  } else {
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall}));
+  }
+
+  rows = rows.filter(r => r.amount / cashChf * 100 >= DUST_PCT);
+  rows.sort((x,y) => y.amount - x.amount);
+  return {cash: cashChf, rows, fx: holdings.fx};
+}
+
 function tradeCell(v, fx){
   if(!isNum(v) || Math.abs(v) < 1) return `<span class="num">—</span>`;
   const cls = v>0 ? 'pos' : 'neg';
@@ -290,6 +358,29 @@ function renderTradesHtml(result){
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
       werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft. Trades &lt;0.5%
       werden ausgeblendet.</p>
+  `;
+}
+
+function renderAddCashHtml(result){
+  if(!result || !result.rows.length) return '';
+  const rows = result.rows.map(r => `<tr>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td><span class="num pos">${convertCHF(r.amount, getCurrency(), result.fx)}</span></td>
+  </tr>`).join('');
+  return `
+    <p class="section-label">Neue Einzahlung — wohin investieren</p>
+    <div class="table-scroll">
+      <table class="alloc-hybrid-tbl">
+        <thead><tr>
+          <th style="text-align:left">Position</th>
+          <th>Neu investieren</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="hint alloc-hint">Additiv: verteilt nur die neue Einzahlung (${convertCHF(result.cash, getCurrency(), result.fx)})
+      auf die Positionen mit dem größten Rückstand zum Zielgewicht — nie ein Verkauf. Trades &lt;0.5%
+      der Einzahlung werden ausgeblendet.</p>
   `;
 }
 
@@ -800,13 +891,13 @@ function drawPerf(perf){
 }
 
 /** Loads the report manifest and renders the newest report. */
-// Input/research/*.csv lists (training/research universes) -- hidden from the
-// picker by default, revealed via the "..." toggle (#report-research-toggle).
-// Fetched once, cached like allocation/metrics/holdings above.
+// input/research/*.csv lists (training/research universes) -- never-scanned
+// ones are reached exclusively via the Portfolio tab's "…" chip now; here we
+// only need the key set so populateReports() can group already-emitted
+// research reports into their own <optgroup>. Fetched once, cached like
+// allocation/metrics/holdings above.
 let researchListsData = null;
 let researchListsTried = false;
-let showResearchLists = false;
-let _lastIndexList = null; // raw GET /api/stocks/index payload, re-used when the toggle flips
 
 async function ensureResearchLists(){
   if(researchListsTried) return researchListsData;
@@ -821,21 +912,14 @@ async function ensureResearchLists(){
   return researchListsData;
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const reportByListUrl = (list, asof) =>
-  getActiveBase() + CONFIG.STOCKS_REPORT_PATH + '?list=' + encodeURIComponent(list) + '&asof=' + encodeURIComponent(asof);
-
 export async function loadReports(){
   await loadLists();
   ensureAllocation();       // fire-and-forget: pre-warms the cache so the Allokation sub-tab is ready
   ensureMetrics();          // fire-and-forget: pre-warms so the Backtest preset is ready on first pick
-  await ensureResearchLists(); // needed before the first populateReports() call so the toggle works immediately
+  await ensureResearchLists(); // needed before the first populateReports() call so research reports group correctly
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
-  if(file === 'FRESH'){
-    // A never-emitted research list is the default selection — populateReports()
-    // already kicked off its own lazy fetch+load(); nothing more to do here.
-  } else if(file){
+  if(file){
     const data = await apiJson(reportUrl(file));
     load(data);
   } else {
@@ -854,75 +938,45 @@ function fillDates(groups, listName, dateSel){
   return items.length?items[0].file:null; // newest first → index 0 = latest
 }
 
-// Select+load a research list that has never been emitted (no index.json
-// entries yet): fetch today's asof via the lazy ?list=&asof= form instead of
-// the normal file-based date picker.
-function loadFreshResearchList(key, dateSel){
-  if(dateSel){ dateSel.innerHTML=''; dateSel.style.display='none'; }
-  apiJson(reportByListUrl(key, todayISO())).then(load)
-    .catch(err=>setViewerError('Report konnte nicht generiert werden: '+err.message));
-}
-
 function populateReports(list){
-  _lastIndexList = list;
   const sel=$('#report');
   const dateSel=$('#report-date');
-  const toggle=$('#report-research-toggle');
   if(!sel) return null;
 
-  const researchKeys = new Set((researchListsData||[]).map(r=>r.key));
-  if(toggle) toggle.style.display = researchKeys.size ? '' : 'none';
-
   if(!list||!list.length){
-    // No reports exist for ANY list yet -- still offer never-emitted research
-    // lists if the toggle is on, so a first-time pick is possible.
-    if(!showResearchLists || !researchKeys.size){
-      sel.style.display='none';
-      if(dateSel) dateSel.style.display='none';
-      return null;
-    }
-    sel.innerHTML=[...researchKeys].map(k=>`<option value="${esc(k)}">${esc(labelFor(k))}</option>`).join('');
-    sel.value=[...researchKeys][0];
-    sel.style.display='';
-    sel.onchange=()=>loadFreshResearchList(sel.value, dateSel);
-    loadFreshResearchList(sel.value, dateSel);
-    return 'FRESH';
+    sel.style.display='none';
+    if(dateSel) dateSel.style.display='none';
+    return null;
   }
 
   // Group by list name; newest-first order preserved within each group.
   const groups=new Map();
   for(const e of list){ const k=e.portfolio||e.file; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(e); }
 
+  // Research lists (Input/research/*.csv) that have never been scanned live
+  // exclusively in the Portfolio tab's "…" chip now; here we only ever show
+  // a research list once it already has at least one emitted report, mixed
+  // into the normal dropdown like any other list (no toggle).
+  const researchKeys = new Set((researchListsData||[]).map(r=>r.key));
   const mainKeys = [...groups.keys()].filter(k=>!researchKeys.has(k));
   const researchGroupKeys = [...groups.keys()].filter(k=>researchKeys.has(k));
-  const researchFreshKeys = showResearchLists ? [...researchKeys].filter(k=>!groups.has(k)) : [];
 
   const optHtml = k => `<option value="${esc(k)}">${esc(labelFor(k))}</option>`;
   let html = mainKeys.map(optHtml).join('');
-  if(showResearchLists && (researchGroupKeys.length || researchFreshKeys.length)){
-    html += `<optgroup label="Research">${
-      [...researchGroupKeys, ...researchFreshKeys].map(optHtml).join('')
-    }</optgroup>`;
+  if(researchGroupKeys.length){
+    html += `<optgroup label="Research">${researchGroupKeys.map(optHtml).join('')}</optgroup>`;
   }
   sel.innerHTML = html;
   sel.value = mainKeys.includes('Portfolio') ? 'Portfolio' : (mainKeys[0] || sel.options[0]?.value);
   sel.style.display='';
 
-  const isFresh = k => researchFreshKeys.includes(k);
   sel.onchange=()=>{
-    if(isFresh(sel.value)) loadFreshResearchList(sel.value, dateSel);
-    else {
-      const f=fillDates(groups,sel.value,dateSel);
-      if(f) apiJson(reportUrl(f)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
-    }
+    const f=fillDates(groups,sel.value,dateSel);
+    if(f) apiJson(reportUrl(f)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
   };
   if(dateSel) dateSel.onchange=()=>{
     if(dateSel.value) apiJson(reportUrl(dateSel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
   };
-  if(isFresh(sel.value)){
-    loadFreshResearchList(sel.value, dateSel);
-    return 'FRESH';
-  }
   return fillDates(groups,sel.value,dateSel);
 }
 
@@ -1311,6 +1365,37 @@ export function renderAllocation(){
       tradesEl.innerHTML = renderTradesHtml(computeSchemeTrades(scheme));
     });
   }
+
+  const addCashPanel = $('#alloc-addcash-panel');
+  if(addCashPanel) addCashPanel.style.display = '';
+  renderAddCash();
+}
+
+// Recompute + render the "Neue Einzahlung" (add-cash) block from the current
+// #alloc-addcash input value. Independent trigger from renderAllocation()
+// (also called directly by the debounced input listener) so typing doesn't
+// re-fetch/re-render the whole Allokation sub-tab.
+function renderAddCash(){
+  const out = $('#alloc-addcash-out');
+  const input = $('#alloc-addcash');
+  const schemeSel = $('#alloc-scheme-sel');
+  if(!out || !input) return;
+  const raw = input.value.trim();
+  if(!raw){ out.innerHTML=''; return; }
+  const typed = Number(raw);
+  if(!isNum(typed) || typed <= 0){ out.innerHTML=''; return; }
+  const scheme = (schemeSel && schemeSel.value) || 'hybrid';
+
+  out.innerHTML = '<p class="hint">Wird berechnet…</p>';
+  Promise.all([ensurePortfolioHoldings(), ensurePortfolioExclude()]).then(()=>{
+    // Guard against a stale async response landing after the user changed
+    // the input, switched scheme, or navigated away from the sub-tab.
+    if(!$('#alloc-addcash-out') || ($('#alloc-scheme-sel')||{}).value !== scheme) return;
+    const fx = portfolioHoldingsData && portfolioHoldingsData.fx;
+    const cashChf = toCHF(typed, getCurrency(), fx);
+    if(!isNum(cashChf) || cashChf <= 0){ out.innerHTML=''; return; }
+    out.innerHTML = renderAddCashHtml(computeAddCash(scheme, cashChf));
+  });
 }
 
 // ---------- detail ----------
@@ -1677,12 +1762,12 @@ export function initViewer(){
   const schemeSel = $('#alloc-scheme-sel');
   if(schemeSel) schemeSel.addEventListener('change', () => { if(allocationData) renderAllocation(); });
 
-  // "..." toggle: reveal Input/research/ lists in the report picker
-  const researchToggle = $('#report-research-toggle');
-  if(researchToggle) researchToggle.addEventListener('click', () => {
-    showResearchLists = !showResearchLists;
-    researchToggle.classList.toggle('active', showResearchLists);
-    if(_lastIndexList !== null) populateReports(_lastIndexList);
+  // Add-cash input — debounced recompute, independent of the full renderAllocation()
+  let _addCashTimer = null;
+  const addCashInput = $('#alloc-addcash');
+  if(addCashInput) addCashInput.addEventListener('input', () => {
+    clearTimeout(_addCashTimer);
+    _addCashTimer = setTimeout(renderAddCash, 250);
   });
 
   ['c-price','c-rec','c-rsi'].forEach(id=>{ const cv=$('#'+id); if(!cv) return;
