@@ -27,10 +27,8 @@ let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infini
 // Series cache: Map keyed by "<list>|<ticker>|<asof>" → series object
 const seriesCache = new Map();
 
-// Perf series cache: Map keyed by list label → perf JSON
+// Perf series cache: Map keyed by list label (or '__digest_combined__') → perf JSON
 const perfCache = new Map();
-// In-flight perf fetch promise (avoid duplicate requests)
-let _perfFetch = null;
 
 // ---------- currency ----------
 const CURRENCY_KEY = 'pwa.stocks.currency';
@@ -189,26 +187,79 @@ async function ensurePortfolioExclude(){
 function buildSchemeTargets(schemeKey){
   const a = allocationData;
   if(!a) return null;
-  const targets = new Map(); // ticker -> {name, pct}
-  const add = (tk, name, pct) => {
+  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin}}
+  const add = (tk, name, pct, meta) => {
     if(!pct) return;
     const prev = targets.get(tk);
-    targets.set(tk, {name: (prev && prev.name) || name, pct: (prev ? prev.pct : 0) + pct});
+    targets.set(tk, {
+      name: (prev && prev.name) || name,
+      pct: (prev ? prev.pct : 0) + pct,
+      meta: (prev && prev.meta) || meta || null,
+    });
   };
   let cashPct = 0;
   if(schemeKey === 'hybrid' && a.hybrid){
     for(const p of (a.hybrid.positions||[])){
-      add(aliasTicker(p.ticker), p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0));
+      add(aliasTicker(p.ticker), p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
+        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
     }
     cashPct += a.hybrid.cash_money_market_pct||0;
   } else if(schemeKey === 'scheme5'){
     for(const s of (a.sleeves||[])){
-      add(aliasTicker(s.primary_ticker||s.sleeve), s.sleeve, s.hold_primary_pct||0);
-      if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0) add(aliasTicker(s.shift_1x_ticker), s.shift_1x_ticker, s.hold_1x_pct);
+      // The primary ticker's own metadata carries the twin reference (per the
+      // producer: for leveraged sleeves this is the REAL 1x twin's live
+      // signal/levels, not the synthetic 2x series — see alloc_scheme5_live.py).
+      add(aliasTicker(s.primary_ticker||s.sleeve), s.sleeve, s.hold_primary_pct||0,
+        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null});
+      if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0) add(aliasTicker(s.shift_1x_ticker), s.shift_1x_ticker, s.hold_1x_pct,
+        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: null});
       cashPct += s.cash_pct||0;
     }
   } else return null;
   return {targets, cashPct};
+}
+
+// ISIN heuristic (ISO 6166: 2 letters + 9 alnum + 1 check digit) -- the scheme/
+// hybrid JSON uses the ISIN itself as the "ticker" for fund legs with no
+// exchange ticker (Avadis, ZKB Gold ETF, CHF Bonds).
+const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
+const isIsin = (tk) => ISIN_RE.test(tk||'');
+
+// Mirrors functions/order_hint.py exactly (same support/resistance column sets,
+// same breakout/pullback thresholds) but *direction* is the caller's rebalance
+// TRADE direction (buy if underweight, sell if overweight) -- which can differ
+// from the instrument's own ml_signal (e.g. the scheme still wants more of a
+// position that ML currently reads as Hold/Sell).
+function orderHintJS(levels, direction){
+  if(!levels || !isNum(levels.close)){
+    return {type:'market', price:null,
+      rationale: direction==='buy' ? 'Market — neue Position, keine Kursdaten' : 'Market — keine Kursdaten'};
+  }
+  const close = levels.close;
+  const rsi = isNum(levels.rsi) ? levels.rsi : null;
+  const supportCols = ['ma50','lower','fib_236','fib_382','fib_5','fib_618','fib_764'];
+  const resistCols  = ['ma50','upper','fib_236','fib_382','fib_5','fib_618','fib_764'];
+  const supports = supportCols.map(k=>levels[k]).filter(v=>isNum(v) && v<close);
+  const resistances = resistCols.map(k=>levels[k]).filter(v=>isNum(v) && v>close);
+
+  if(direction === 'buy'){
+    if(isNum(levels.upper) && close>=levels.upper && (rsi===null || rsi>=65)){
+      return {type:'market', price:close, rationale:'Market — Ausbruch über oberes Band'};
+    }
+    if(supports.length){
+      const level = Math.max(...supports);
+      return {type:'limit', price:level, rationale:`Limit @ ${level.toFixed(2)} — Rücksetzer-Kauf`};
+    }
+    return {type:'market', price:close, rationale:'Market — kein Support unter Kurs'};
+  }
+  if(isNum(levels.lower) && close<=levels.lower && (rsi===null || rsi<=35)){
+    return {type:'market', price:close, rationale:'Market — Ausbruch unter unteres Band'};
+  }
+  if(resistances.length){
+    const level = Math.min(...resistances);
+    return {type:'limit', price:level, rationale:`Limit @ ${level.toFixed(2)} — Verkauf in Stärke`};
+  }
+  return {type:'market', price:close, rationale:'Market — kein Widerstand über Kurs'};
 }
 
 // Recommended trades to move the WHOLE current portfolio (Input/Portfolio.csv,
@@ -234,21 +285,26 @@ function computeSchemeTrades(schemeKey){
   if(total <= 0) return null;
 
   const DUST_PCT = 0.5; // hide trades below 0.5% of total (rounding noise, not actionable)
+  const MIN_ORDER_CHF = 1000; // no recommendation is worth transacting below this
+  const passes = (absTrade) => absTrade / total * 100 >= DUST_PCT && absTrade >= MIN_ORDER_CHF;
   const rows = [];
   const seen = new Set();
-  for(const [tk, {name, pct}] of built.targets){
+  for(const [tk, {name, pct, meta}] of built.targets){
     seen.add(tk);
     const targetVal = total * pct / 100;
     const curVal = (byTicker.get(tk)||{}).value || 0;
     const trade = targetVal - curVal;
-    if(Math.abs(trade) / total * 100 >= DUST_PCT){
-      rows.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, targetVal, curVal, trade});
+    if(passes(Math.abs(trade))){
+      const dir = trade > 0 ? 'buy' : 'sell';
+      rows.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, targetVal, curVal, trade,
+        meta, orderHint: orderHintJS(meta && meta.levels, dir)});
     }
   }
   const cashTarget = total * built.cashPct / 100;
-  if(cashTarget / total * 100 >= DUST_PCT) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget});
+  if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null});
   for(const [tk, {value, name}] of byTicker){
-    if(!seen.has(tk) && value/total*100 >= DUST_PCT) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value});
+    if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
+      meta: null, orderHint: orderHintJS(null, 'sell')});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
   return {total, rows, fx: holdings.fx, excludedHeld};
@@ -293,13 +349,15 @@ function computeAddCash(schemeKey, cashChf){
 
   // Build every target leg (incl. the cash/Geldmarkt leg) with its shortfall.
   const legs = [];
-  for(const [tk, {name, pct}] of built.targets){
+  for(const [tk, {name, pct, meta}] of built.targets){
     const targetVal = newTotal * pct / 100;
     const curVal = (byTicker.get(tk)||{}).value || 0;
-    legs.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, pct, curVal, shortfall: Math.max(0, targetVal - curVal)});
+    legs.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, pct, curVal, meta,
+      shortfall: Math.max(0, targetVal - curVal)});
   }
   if(built.cashPct > 0){
-    legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, shortfall: Math.max(0, newTotal * built.cashPct / 100)});
+    legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, meta: null,
+      shortfall: Math.max(0, newTotal * built.cashPct / 100)});
   }
 
   const sumShortfall = legs.reduce((s, l) => s + l.shortfall, 0);
@@ -308,81 +366,195 @@ function computeAddCash(schemeKey, cashChf){
     // No shortfalls at all (portfolio already at/above every target) — spread
     // the whole amount pro-rata by weight since there's nothing to "catch up".
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta}));
   } else if(sumShortfall <= cashChf){
     const leftover = cashChf - sumShortfall;
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta}));
   } else {
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall, meta: l.meta}));
   }
 
-  rows = rows.filter(r => r.amount / cashChf * 100 >= DUST_PCT);
+  const MIN_ORDER_CHF = 1000; // same floor as computeSchemeTrades
+  rows = rows.filter(r => r.amount / cashChf * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
   rows.sort((x,y) => y.amount - x.amount);
+  // Additive-only: every row is a buy by construction.
+  rows.forEach(r => { r.orderHint = orderHintJS(r.meta && r.meta.levels, 'buy'); });
   return {cash: cashChf, rows, fx: holdings.fx};
 }
 
-function tradeCell(v, fx){
-  if(!isNum(v) || Math.abs(v) < 1) return `<span class="num">—</span>`;
-  const cls = v>0 ? 'pos' : 'neg';
-  const verb = v>0 ? 'Kaufen' : 'Verkaufen';
-  return `<span class="num ${cls}">${verb} ${convertCHF(Math.abs(v), getCurrency(), fx)}</span>`;
+// Same green/red convention as the Übersicht Order column (orderCell/orderDirection).
+function allocOrderCell(oh, dir){
+  if(!oh) return '<span class="num">—</span>';
+  const cls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
+  const typeLabel = oh.type==='market' ? 'Market' : 'Limit';
+  const priceStr = oh.price!=null ? ` @ ${oh.price.toFixed(2)}` : '';
+  return `<span class="num ${cls}">${esc(typeLabel)}${priceStr}</span>`;
 }
 
+// Last-rendered rows, kept for the delegated row-click → popup lookup (avoids
+// round-tripping row objects through HTML data-attributes).
+let _lastTradesResult = null;
+let _lastAddCashResult = null;
+
 function renderTradesHtml(result){
+  _lastTradesResult = result;
   if(!result || !result.rows.length){
-    return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (keine Trades &gt; 0.5%).</p>`;
+    return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (keine Trades &gt; 0.5% oder &gt;1000 CHF).</p>`;
   }
-  const rows = result.rows.map(r => `<tr>
+  const rows = result.rows.map((r,i) => `<tr class="alloc-trade-row" data-kind="trade" data-idx="${i}">
     <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
-    <td>${convertCHF(r.curVal, getCurrency(), result.fx)}</td>
-    <td>${convertCHF(r.targetVal, getCurrency(), result.fx)}</td>
-    <td>${tradeCell(r.trade, result.fx)}</td>
+    <td>${allocOrderCell(r.orderHint, r.trade>0?'buy':'sell')}</td>
   </tr>`).join('');
   return `
     <p class="section-label">Empfohlene Trades — Transfer ins Schema</p>
     <div class="table-scroll">
-      <table class="alloc-hybrid-tbl">
+      <table class="alloc-hybrid-tbl alloc-trades-tbl">
         <thead><tr>
           <th style="text-align:left">Position</th>
-          <th>Jetzt</th>
-          <th>Ziel</th>
-          <th>Trade</th>
+          <th>Order</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p class="hint alloc-hint">Basis: Gesamtwert von <b>Input/Portfolio.csv</b> (${convertCHF(result.total, getCurrency(), result.fx)}${
-      result.excludedHeld.length ? `, ohne ${result.excludedHeld.map(esc).join(', ')} (Input/Portfolio_exclude.csv — manuell verwaltet, nie Teil des Trade-Vorschlags)` : ''
+    <p class="hint alloc-hint">Basis: Gesamtwert von <b>input/Portfolio.csv</b> (${convertCHF(result.total, getCurrency(), result.fx)}${
+      result.excludedHeld.length ? `, ohne ${result.excludedHeld.map(esc).join(', ')} (input/Portfolio_exclude.csv — manuell verwaltet, nie Teil des Trade-Vorschlags)` : ''
     }),
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
-      werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft. Trades &lt;0.5%
-      werden ausgeblendet.</p>
+      werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft. Trades &lt;0.5% oder
+      &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
 
 function renderAddCashHtml(result){
+  _lastAddCashResult = result;
   if(!result || !result.rows.length) return '';
-  const rows = result.rows.map(r => `<tr>
+  const rows = result.rows.map((r,i) => `<tr class="alloc-trade-row" data-kind="addcash" data-idx="${i}">
     <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
-    <td><span class="num pos">${convertCHF(r.amount, getCurrency(), result.fx)}</span></td>
+    <td>${allocOrderCell(r.orderHint, 'buy')}</td>
   </tr>`).join('');
   return `
     <p class="section-label">Neue Einzahlung — wohin investieren</p>
     <div class="table-scroll">
-      <table class="alloc-hybrid-tbl">
+      <table class="alloc-hybrid-tbl alloc-trades-tbl">
         <thead><tr>
           <th style="text-align:left">Position</th>
-          <th>Neu investieren</th>
+          <th>Order</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <p class="hint alloc-hint">Additiv: verteilt nur die neue Einzahlung (${convertCHF(result.cash, getCurrency(), result.fx)})
       auf die Positionen mit dem größten Rückstand zum Zielgewicht — nie ein Verkauf. Trades &lt;0.5%
-      der Einzahlung werden ausgeblendet.</p>
+      der Einzahlung oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
+
+// ---------- trade detail popup (copyable ISIN / order level) ----------
+let _copyBtnSeq = 0;
+function copyBtnHtml(text){
+  return `<button class="copy-btn" data-copy="${esc(text)}" title="Kopieren" type="button">⧉</button>`;
+}
+function wireCopyButtons(root){
+  root.querySelectorAll('.copy-btn').forEach(btn=>{
+    btn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      const text = btn.dataset.copy;
+      try{
+        await navigator.clipboard.writeText(text);
+        btn.classList.add('copied');
+        const orig = btn.textContent;
+        btn.textContent = '✓';
+        setTimeout(()=>{ btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
+      }catch(err){ console.warn('clipboard write failed:', err.message); }
+    });
+  });
+}
+
+// Same look & feel as the Übersicht row-sheet (openRowSheet) -- reuses its CSS
+// classes (.row-sheet*/.rs-metric*) for visual consistency between the two popups.
+function openTradeSheet(row, ctx){
+  if(!row) return;
+  document.querySelectorAll('.row-sheet-backdrop,.row-sheet').forEach(el=>el.remove());
+  const backdrop=document.createElement('div'); backdrop.className='row-sheet-backdrop';
+  const sheet=document.createElement('div'); sheet.className='row-sheet';
+
+  const currency = getCurrency();
+  const meta = row.meta || {};
+  const oh = row.orderHint;
+  const isAddCash = ctx.kind === 'addcash';
+  const dir = isAddCash ? 'buy' : (row.trade > 0 ? 'buy' : (row.trade < 0 ? 'sell' : null));
+  const ohCls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
+
+  const isinTile = isIsin(row.ticker) ? `<div class="rs-metric"><span class="rs-metric-label">ISIN</span>
+    <span class="rs-metric-value">${esc(row.ticker)} ${copyBtnHtml(row.ticker)}</span></div>` : '';
+
+  let twinTile = '';
+  if(meta.twin){
+    const twinTicker = meta.twin.split(' ')[0];
+    twinTile = `<div class="rs-metric"><span class="rs-metric-label">Reale Position</span>
+      <span class="rs-metric-value">${esc(meta.twin)} ${copyBtnHtml(twinTicker)}</span></div>`;
+  }
+
+  const mlTile = meta.ml_signal ? `<div class="rs-metric"><span class="rs-metric-label">ML</span>
+    <span class="rs-metric-value">${esc(meta.ml_signal)}</span></div>` : '';
+
+  const jetztZielHtml = isAddCash ? '' : `
+    <div class="rs-metric"><span class="rs-metric-label">Jetzt</span><span class="rs-metric-value">${convertCHF(row.curVal, currency, ctx.fx)}</span></div>
+    <div class="rs-metric"><span class="rs-metric-label">Ziel</span><span class="rs-metric-value">${convertCHF(row.targetVal, currency, ctx.fx)}</span></div>`;
+
+  const amountLabel = isAddCash ? 'Neu investieren' : 'Trade';
+  const amountVal = isAddCash ? row.amount : row.trade;
+  const amountCls = amountVal>0 ? 'pos' : (amountVal<0 ? 'neg' : '');
+  const amountStr = isAddCash
+    ? convertCHF(row.amount, currency, ctx.fx)
+    : (amountVal>0 ? 'Kaufen ' : 'Verkaufen ') + convertCHF(Math.abs(amountVal), currency, ctx.fx);
+
+  const orderPriceStr = (oh && oh.price!=null) ? oh.price.toFixed(2) : null;
+  const orderTile = oh ? `<div class="rs-metric"><span class="rs-metric-label">Order</span>
+    <span class="rs-metric-value num ${ohCls}">${esc(oh.type==='market'?'Market':'Limit')}${orderPriceStr?(' @ '+orderPriceStr):''}
+    ${orderPriceStr?copyBtnHtml(orderPriceStr):''}</span></div>` : '';
+
+  sheet.innerHTML = `<div class="row-sheet-panel">
+    <div class="row-sheet-header">
+      <div class="row-sheet-title">${esc(row.name||row.ticker)}</div>
+      <div class="row-sheet-sub">${esc(row.ticker)}</div>
+    </div>
+    <div class="row-sheet-section">
+      <div class="row-sheet-section-label">Details</div>
+      <div class="rs-metrics">
+        ${jetztZielHtml}
+        <div class="rs-metric"><span class="rs-metric-label">${amountLabel}</span><span class="rs-metric-value num ${amountCls}">${amountStr}</span></div>
+        ${mlTile}
+        ${isinTile}
+        ${twinTile}
+      </div>
+    </div>
+    ${orderTile ? `<div class="row-sheet-section">
+      <div class="row-sheet-section-label">Ordervorschlag</div>
+      <div class="rs-metrics">${orderTile}</div>
+      <div class="rs-order-rationale">${esc(oh.rationale||'')}</div>
+    </div>` : ''}
+  </div>`;
+
+  backdrop.addEventListener('click', ()=>{ backdrop.remove(); sheet.remove(); });
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  wireCopyButtons(sheet);
+}
+
+// Delegated click on both trade tables — looks up the row by index from the
+// last-rendered result rather than round-tripping data through HTML attributes.
+document.addEventListener('click', (e)=>{
+  const tr = e.target.closest('.alloc-trade-row');
+  if(!tr) return;
+  const idx = Number(tr.dataset.idx);
+  if(tr.dataset.kind === 'trade' && _lastTradesResult){
+    openTradeSheet(_lastTradesResult.rows[idx], {fx: _lastTradesResult.fx, kind: 'trade'});
+  } else if(tr.dataset.kind === 'addcash' && _lastAddCashResult){
+    openTradeSheet(_lastAddCashResult.rows[idx], {fx: _lastAddCashResult.fx, kind: 'addcash'});
+  }
+});
 
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
@@ -745,24 +917,18 @@ function load(json){
   populateChartTicker();
   if(ROWS.length) select(ROWS[0].ticker);
 
-  // Show currency selector and perf graph only when the report has holdings
+  // Show currency selector only when the report has holdings. The portfolio
+  // total-value chart no longer lives here -- it's a fixed Digest-tab fixture
+  // (Portfolio + Portfolio_exclude combined, see loadDigestPerf()), independent
+  // of whatever report/list is open in Übersicht.
   const hasFx = !!(json.fx);
   const currSel = $('#currency-sel');
-  const perfWrap = $('#perf-wrap');
   if(currSel){
     if(hasFx){
       currSel.value = getCurrency();
       currSel.style.display = '';
     } else {
       currSel.style.display = 'none';
-    }
-  }
-  if(perfWrap){
-    if(hasFx){
-      perfWrap.style.display = '';
-      loadPerfAndDraw();
-    } else {
-      perfWrap.style.display = 'none';
     }
   }
 }
@@ -826,30 +992,76 @@ async function apiJson(url){
 // ---------- perf graph ----------
 const perfUrl = (list) => getActiveBase() + CONFIG.STOCKS_PORTFOLIO_SERIES_PATH + '?list=' + encodeURIComponent(list);
 
-async function loadPerfAndDraw(){
-  const list = DATA && DATA.portfolio;
-  if(!list || !DATA.fx) return;
-
-  let perf;
-  if(perfCache.has(list)){
-    perf = perfCache.get(list);
-  } else {
-    // Avoid duplicate in-flight fetches
-    if(!_perfFetch){
-      _perfFetch = apiJson(perfUrl(list)).then(p => {
-        perfCache.set(list, p);
-        _perfFetch = null;
-        return p;
-      }).catch(err => {
-        _perfFetch = null;
-        console.warn('perf fetch failed:', err.message);
-        return null;
-      });
-    }
-    perf = await _perfFetch;
-    if(!perf) return;
+// Forward/backward-fill a date->value Map onto a sorted date union (nearest known
+// value carried across gaps) -- same fill convention as functions/allocation.py's
+// chf_factor_series (ffill().bfill()), needed because Portfolio.perf.json and
+// Portfolio_exclude.perf.json come from independent scans with ragged, non-identical
+// date windows (different holding histories / scan cutoffs).
+function _fillOnUnion(map, unionDates){
+  const out = new Array(unionDates.length).fill(null);
+  let last = null;
+  for(let i = 0; i < unionDates.length; i++){
+    if(map.has(unionDates[i])) last = map.get(unionDates[i]);
+    out[i] = last;
   }
-  drawPerf(perf);
+  let next = null;
+  for(let i = unionDates.length - 1; i >= 0; i--){
+    if(out[i] !== null) next = out[i];
+    else out[i] = next;
+  }
+  return out;
+}
+
+/** Sum two portfolio_series payloads ({dates,total,fx}) onto their date union. */
+function combinePerf(a, b){
+  if(!a && !b) return null;
+  if(!a) return b;
+  if(!b) return a;
+  const unionDates = Array.from(new Set([...(a.dates||[]), ...(b.dates||[])])).sort();
+  const aTotal = _fillOnUnion(new Map((a.dates||[]).map((d,i)=>[d, a.total[i]])), unionDates);
+  const bTotal = _fillOnUnion(new Map((b.dates||[]).map((d,i)=>[d, b.total[i]])), unionDates);
+  const total = unionDates.map((_, i) => (aTotal[i]||0) + (bTotal[i]||0));
+  const fx = {};
+  const fxKeys = new Set([...Object.keys(a.fx||{}), ...Object.keys(b.fx||{})]);
+  for(const k of fxKeys){
+    const aMap = new Map((a.dates||[]).map((d,i)=>[d, (a.fx||{})[k]?.[i]]));
+    const bMap = new Map((b.dates||[]).map((d,i)=>[d, (b.fx||{})[k]?.[i]]));
+    const aFilled = _fillOnUnion(aMap, unionDates);
+    const bFilled = _fillOnUnion(bMap, unionDates);
+    fx[k] = unionDates.map((_, i) => aFilled[i] ?? bFilled[i] ?? null);
+  }
+  return {base: a.base || b.base, dates: unionDates, total, fx};
+}
+
+let _digestPerfLoaded = false;
+let _digestPerfFetch = null;
+
+/** Combined Portfolio + Portfolio_exclude total-value chart, shown at the bottom
+ * of the Digest tab (portfolio-wide, independent of whatever report/list is open
+ * in Übersicht) -- see combinePerf() above for the date-alignment rationale. */
+async function loadDigestPerf(){
+  const wrap = $('#perf-wrap');
+  if(!wrap) return;
+  if(_digestPerfLoaded){
+    const combined = perfCache.get('__digest_combined__');
+    if(combined){ wrap.style.display=''; drawPerf(combined); }
+    return;
+  }
+  if(!_digestPerfFetch){
+    _digestPerfFetch = Promise.all([
+      apiJson(perfUrl('Portfolio')).catch(()=>null),
+      apiJson(perfUrl('Portfolio_exclude')).catch(()=>null),
+    ]).then(([a, b]) => {
+      _digestPerfLoaded = true;
+      _digestPerfFetch = null;
+      const combined = combinePerf(a, b);
+      if(combined) perfCache.set('__digest_combined__', combined);
+      return combined;
+    });
+  }
+  const combined = await _digestPerfFetch;
+  if(combined){ wrap.style.display=''; drawPerf(combined); }
+  else wrap.style.display = 'none';
 }
 
 function drawPerf(perf){
@@ -887,7 +1099,7 @@ function drawPerf(perf){
   });
 
   const lgEl = $('#lg-perf');
-  if(lgEl) legend(lgEl, [['#4ea1ff', 'Portfolio (' + currency + ')']]);
+  if(lgEl) legend(lgEl, [['#4ea1ff', 'Portfolio gesamt inkl. Exclude (' + currency + ')']]);
 }
 
 /** Loads the report manifest and renders the newest report. */
@@ -1751,9 +1963,9 @@ export function initViewer(){
       // Rebuild COLS so Value column header and formatter picks up new currency
       if(DATA) COLS = buildCols();
       renderOverview();
-      // Redraw perf graph using cached data
-      const list = DATA && DATA.portfolio;
-      if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
+      // Redraw the Digest perf graph using cached data (currency-formatted)
+      const combined = perfCache.get('__digest_combined__');
+      if(combined) drawPerf(combined);
       if(allocationData) renderAllocation(); // trade amounts are currency-formatted too
     });
   }
@@ -1847,11 +2059,9 @@ export function initViewer(){
     hoverIdx = null;
     chartsVisible = e.detail === 'charts';
     if(chartsVisible && selected){ lastW=0; draw(); }
-    // Redraw perf graph when overview tab becomes visible (was hidden → zero clientWidth)
-    if(e.detail === 'overview'){
-      const list = DATA && DATA.portfolio;
-      if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
-    }
+    // Load/redraw the Digest perf graph when the Digest tab becomes visible
+    // (was hidden → zero clientWidth, or first visit).
+    if(e.detail === 'digest') loadDigestPerf();
   });
 
   window.addEventListener('pwa:table-variant', ()=>{ if(DATA) renderOverview(); });
@@ -1875,12 +2085,10 @@ export function initViewer(){
   addEventListener('resize', ()=>{
     clearTimeout(rz);
     rz = setTimeout(()=>{
-      // Redraw perf graph on resize (overview tab may be visible)
-      const list = DATA && DATA.portfolio;
-      if(list && perfCache.has(list)){
-        const perfWrap = $('#perf-wrap');
-        if(perfWrap && perfWrap.style.display !== 'none') drawPerf(perfCache.get(list));
-      }
+      // Redraw the Digest perf graph on resize (Digest tab may be visible)
+      const combined = perfCache.get('__digest_combined__');
+      const perfWrap = $('#perf-wrap');
+      if(combined && perfWrap && perfWrap.style.display !== 'none') drawPerf(combined);
       if(!chartsVisible || !selected) return;
       const w = ($('#c-price')||{}).clientWidth || 0;
       if(w !== lastW){ lastW=w; draw(); }

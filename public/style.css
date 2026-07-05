@@ -84,6 +84,11 @@ body{display:flex;flex-direction:column;min-height:100dvh}
 #filter{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:4px 8px;border-radius:7px;flex:1 1 120px;min-width:100px;max-width:100%;font-size:12px}
 select#report,select#report-date{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:4px 8px;border-radius:7px;cursor:pointer;max-width:100%;font-family:inherit;font-size:12px}
 .overview-controls select{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:4px 8px;border-radius:7px;cursor:pointer;font-family:inherit;font-size:12px}
+/* Desktop Chromium ignores :root's color-scheme for the native option popup unless
+   it's set on the <select> itself too — without it the popup renders as an
+   unstyled white box with near-invisible dark text. */
+select{color-scheme:dark}
+select option,select optgroup{background:var(--panel2);color:var(--text)}
 .status-line{color:var(--text-dim);font-size:11px;flex-basis:100%;margin:0}
 .view-error{margin:8px 0 0;color:var(--sell);font-size:13px}
 
@@ -151,6 +156,12 @@ td a:hover{text-decoration:underline}
 .alloc-addcash-panel{margin:10px 0}
 .alloc-addcash-panel #alloc-addcash{width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:14px;font-family:inherit;margin-bottom:8px}
 .alloc-addcash-panel #alloc-addcash:focus{outline:none;border-color:var(--accent)}
+.alloc-trade-row{cursor:pointer}
+.alloc-trade-row:active{background:rgba(255,255,255,.05)}
+/* Copy button: small inline glyph next to a copyable value (ISIN, order level) */
+.copy-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0 2px;vertical-align:middle;line-height:1}
+.copy-btn:hover{color:var(--text)}
+.copy-btn.copied{color:var(--buy)}
 
 /* ── Charts tab ──────────────────────────────────────────────────────────── */
 #chart-ticker{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:7px;width:100%;font-family:inherit;font-size:14px;margin-bottom:10px}
