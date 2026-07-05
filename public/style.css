@@ -72,6 +72,7 @@ body{display:flex;flex-direction:column;min-height:100dvh}
 .btn{background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:7px;cursor:pointer;font-size:13px;font-family:inherit}
 .btn:hover{border-color:var(--accent)}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+#report-research-toggle.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn-primary:hover{opacity:.9;border-color:var(--accent)}
 .btn-danger{color:var(--sell);border-color:rgba(255,92,92,.35)}
 .pf-table .del-btn.btn-danger{color:var(--sell)}

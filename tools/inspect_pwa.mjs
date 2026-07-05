@@ -23,7 +23,7 @@
 import { chromium } from 'playwright';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -151,12 +151,36 @@ await context.route('**/api/stocks/**', async route => {
       const f = path.join(OUTPUT_DIR, 'backtest_metrics.json');
       return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
     }
+    if (ep === 'portfolio_exclude') {
+      const f = path.join(INPUT_DIR, 'Portfolio_exclude.csv');
+      const tickers = existsSync(f) ? csvParse(await readFile(f, 'utf-8')) : [];
+      return jres(route, { tickers });
+    }
+    if (ep === 'research_lists') {
+      const dir = path.join(INPUT_DIR, 'research');
+      let files = [];
+      try { files = readdirSync(dir); } catch {}
+      const keys = files.filter(f => f.endsWith('.csv') && !f.startsWith('_')).map(f => f.slice(0, -4)).sort();
+      return jres(route, keys.map(key => ({ key, label: key.replace(/_/g, ' ') })));
+    }
     if (ep === 'report') {
       const file = u.searchParams.get('file');
-      const f = file && path.join(OUTPUT_DIR, path.basename(file));
-      return (f && existsSync(f))
-        ? jres(route, JSON.parse(await readFile(f, 'utf-8')))
-        : jres(route, { error: 'not found' }, 404);
+      if (file) {
+        const f = path.join(OUTPUT_DIR, path.basename(file));
+        return existsSync(f)
+          ? jres(route, JSON.parse(await readFile(f, 'utf-8')))
+          : jres(route, { error: 'not found' }, 404);
+      }
+      // ?list=&asof= lazy form: the real server spawns `main.py --emit`; this
+      // inspector can't, so fall back to the newest already-emitted report for
+      // that list (good enough to exercise the "fresh research list" UI flow).
+      const list = u.searchParams.get('list');
+      if (!list) return jres(route, { error: 'list required' }, 400);
+      let files = [];
+      try { files = readdirSync(OUTPUT_DIR); } catch {}
+      const matches = files.filter(fn => new RegExp(`^\\d{8}_${list}\\.json$`).test(fn)).sort().reverse();
+      if (!matches.length) return jres(route, { error: 'not found' }, 404);
+      return jres(route, JSON.parse(await readFile(path.join(OUTPUT_DIR, matches[0]), 'utf-8')));
     }
     if (ep.startsWith('digest')) {
       const md = ep.includes('.md');

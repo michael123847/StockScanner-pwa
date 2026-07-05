@@ -53,8 +53,8 @@ const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 // drift, e.g. before a rescan picks up a backend rename) would silently drop
 // a literal-'ML' match and the column would vanish from the preset.
 const PRESETS = {
-  holdings: ['Ticker','Value','Δ1D','Δ21D', {panelKey:'ml_risk'}],
-  chancen:  ['Ticker', {panelKey:'ml_risk'}, 'RSI','Mom14'],
+  holdings: ['Ticker','Value','Δ1D','Order', {panelKey:'ml_risk'}],
+  chancen:  ['Ticker', {panelKey:'ml_risk'}, 'RSI','Δ21D'],
 };
 function getPreset(){
   const fallback = ()=>(DATA&&(DATA.portfolio==='Portfolio'||DATA.fx))?'holdings':'chancen';
@@ -122,6 +122,176 @@ async function ensureMetrics(){
   return metricsData;
 }
 function metricsFor(ticker){ return (metricsData && metricsData.tickers && metricsData.tickers[ticker]) || null; }
+
+// ---------- scheme trade recommendation (Allokation sub-tab) ----------
+// Independent of the currently-selected Übersicht list/report — always the
+// "Portfolio" list's latest report, since that's what carries real holdings
+// (per-ticker holding.value_chf). Fetched once, cached like allocation/metrics.
+let portfolioHoldingsData = null;
+let portfolioHoldingsTried = false;
+
+async function ensurePortfolioHoldings(){
+  if(portfolioHoldingsTried) return portfolioHoldingsData;
+  portfolioHoldingsTried = true;
+  try{
+    const idx = await apiJson(indexUrl());
+    const entry = (idx||[]).find(e => (e.portfolio||e.file) === 'Portfolio');
+    portfolioHoldingsData = entry ? await apiJson(reportUrl(entry.file)) : null;
+  }catch(err){
+    portfolioHoldingsData = null;
+    console.warn('portfolio holdings fetch failed:', err.message);
+  }
+  const panel = $('#alloc-panel');
+  if(panel && panel.style.display !== 'none') renderAllocation();
+  return portfolioHoldingsData;
+}
+
+// Scheme-side ticker -> the ticker actually used in Input/Portfolio.csv. Only
+// needed for instruments the user already holds under a different alias —
+// gold/bond legs aren't held yet, so they need no entry (target - 0 is correct
+// regardless of ticker spelling).
+const PORTFOLIO_TICKER_ALIAS = {
+  'CH0032831981': 'AVADIS',  // Avadis fund: hybrid scheme uses the ISIN, Portfolio.csv a plain alias
+  'BTC': 'BTC-USD',          // scheme5 sleeve ticker vs. the yfinance/Portfolio.csv ticker
+};
+const aliasTicker = t => PORTFOLIO_TICKER_ALIAS[t] || t;
+
+// Holdings excluded from the trade-recommendation pool entirely (not counted
+// in the total, never recommended for sale) -- e.g. an ESAP employee plan,
+// handled manually. Live list: Input/Portfolio_exclude.csv (same schema as
+// Portfolio.csv -- a real, scanned holdings list, just excluded from the
+// scheme trade math) via GET /api/stocks/portfolio_exclude, fetched once and
+// cached like allocation/
+// metrics/holdings above.
+let portfolioExcludeData = null;
+let portfolioExcludeTried = false;
+
+async function ensurePortfolioExclude(){
+  if(portfolioExcludeTried) return portfolioExcludeData;
+  portfolioExcludeTried = true;
+  try{
+    const url = getActiveBase() + CONFIG.STOCKS_PORTFOLIO_EXCLUDE_PATH;
+    const data = await apiJson(url);
+    portfolioExcludeData = new Set((data && data.tickers || []).map(t => t.ticker));
+  }catch(err){
+    portfolioExcludeData = new Set();
+    console.warn('portfolio_exclude fetch failed:', err.message);
+  }
+  const panel = $('#alloc-panel');
+  if(panel && panel.style.display !== 'none') renderAllocation();
+  return portfolioExcludeData;
+}
+
+// Build {ticker -> target weight%} + a combined cash weight% for one scheme.
+// Uses each position/sleeve's *live* hold_now/hold_primary/hold_1x/cash split
+// (already conviction/de-risk-adjusted by the producer), not the static
+// long-run weight_pct, so the trade list reflects today's actual target.
+function buildSchemeTargets(schemeKey){
+  const a = allocationData;
+  if(!a) return null;
+  const targets = new Map(); // ticker -> {name, pct}
+  const add = (tk, name, pct) => {
+    if(!pct) return;
+    const prev = targets.get(tk);
+    targets.set(tk, {name: (prev && prev.name) || name, pct: (prev ? prev.pct : 0) + pct});
+  };
+  let cashPct = 0;
+  if(schemeKey === 'hybrid' && a.hybrid){
+    for(const p of (a.hybrid.positions||[])){
+      add(aliasTicker(p.ticker), p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0));
+    }
+    cashPct += a.hybrid.cash_money_market_pct||0;
+  } else if(schemeKey === 'scheme5'){
+    for(const s of (a.sleeves||[])){
+      add(aliasTicker(s.primary_ticker||s.sleeve), s.sleeve, s.hold_primary_pct||0);
+      if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0) add(aliasTicker(s.shift_1x_ticker), s.shift_1x_ticker, s.hold_1x_pct);
+      cashPct += s.cash_pct||0;
+    }
+  } else return null;
+  return {targets, cashPct};
+}
+
+// Recommended trades to move the WHOLE current portfolio (Input/Portfolio.csv,
+// total CHF value across every held ticker) into the selected scheme's target
+// weights: any holding outside the scheme's sleeves is a full sell; any scheme
+// instrument not yet held is a full buy from cash. Same formula whether the
+// portfolio has never matched the scheme (large trades) or already does
+// (small drift-correction trades) — there is no separate "rebalance mode".
+function computeSchemeTrades(schemeKey){
+  const built = buildSchemeTargets(schemeKey);
+  const holdings = portfolioHoldingsData;
+  if(!built || !holdings || !Array.isArray(holdings.tickers)) return null;
+
+  const exclude = portfolioExcludeData || new Set();
+  const byTicker = new Map();
+  const excludedHeld = [];
+  let total = 0;
+  for(const t of holdings.tickers){
+    const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
+    if(exclude.has(t.ticker)){ if(v > 0) excludedHeld.push(t.ticker); continue; }
+    if(v > 0){ byTicker.set(t.ticker, {value: v, name: t.name}); total += v; }
+  }
+  if(total <= 0) return null;
+
+  const DUST_PCT = 0.5; // hide trades below 0.5% of total (rounding noise, not actionable)
+  const rows = [];
+  const seen = new Set();
+  for(const [tk, {name, pct}] of built.targets){
+    seen.add(tk);
+    const targetVal = total * pct / 100;
+    const curVal = (byTicker.get(tk)||{}).value || 0;
+    const trade = targetVal - curVal;
+    if(Math.abs(trade) / total * 100 >= DUST_PCT){
+      rows.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, targetVal, curVal, trade});
+    }
+  }
+  const cashTarget = total * built.cashPct / 100;
+  if(cashTarget / total * 100 >= DUST_PCT) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget});
+  for(const [tk, {value, name}] of byTicker){
+    if(!seen.has(tk) && value/total*100 >= DUST_PCT) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value});
+  }
+  rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
+  return {total, rows, fx: holdings.fx, excludedHeld};
+}
+
+function tradeCell(v, fx){
+  if(!isNum(v) || Math.abs(v) < 1) return `<span class="num">—</span>`;
+  const cls = v>0 ? 'pos' : 'neg';
+  const verb = v>0 ? 'Kaufen' : 'Verkaufen';
+  return `<span class="num ${cls}">${verb} ${convertCHF(Math.abs(v), getCurrency(), fx)}</span>`;
+}
+
+function renderTradesHtml(result){
+  if(!result || !result.rows.length){
+    return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (keine Trades &gt; 0.5%).</p>`;
+  }
+  const rows = result.rows.map(r => `<tr>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td>${convertCHF(r.curVal, getCurrency(), result.fx)}</td>
+    <td>${convertCHF(r.targetVal, getCurrency(), result.fx)}</td>
+    <td>${tradeCell(r.trade, result.fx)}</td>
+  </tr>`).join('');
+  return `
+    <p class="section-label">Empfohlene Trades — Transfer ins Schema</p>
+    <div class="table-scroll">
+      <table class="alloc-hybrid-tbl">
+        <thead><tr>
+          <th style="text-align:left">Position</th>
+          <th>Jetzt</th>
+          <th>Ziel</th>
+          <th>Trade</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="hint alloc-hint">Basis: Gesamtwert von <b>Input/Portfolio.csv</b> (${convertCHF(result.total, getCurrency(), result.fx)}${
+      result.excludedHeld.length ? `, ohne ${result.excludedHeld.map(esc).join(', ')} (Input/Portfolio_exclude.csv — manuell verwaltet, nie Teil des Trade-Vorschlags)` : ''
+    }),
+      umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
+      werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft. Trades &lt;0.5%
+      werden ausgeblendet.</p>
+  `;
+}
 
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
@@ -363,6 +533,7 @@ function buildCols(){
     ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
     ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
     ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
+    ['Order',    r=>r.order_hint,             (v,r)=>orderCell(v,r),   'n'],
   ];
 
   // Value column — only injected when the report has holdings (fx snapshot present)
@@ -390,6 +561,7 @@ let COLS = [
   ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
   ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
   ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
+  ['Order',    r=>r.order_hint,             (v,r)=>orderCell(v,r),   'n'],
 ];
 
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -410,6 +582,24 @@ function applyPresetCols(){
 // Signed delta cell: green/red by sign, plain fixed-point (not a percent —
 // used for Sharpe deltas, which are ratio differences, not returns).
 function numDeltaCell(v,d=2){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos'; const s=v>0?'+':''; return `<span class="num ${c}">${s}${v.toFixed(d)}</span>`; }
+
+// Order-execution hint direction, mirroring the Buy/Sell collapse in
+// functions/order_hint.py (the ml_risk panel signal is the authoritative
+// source — order_hint itself only carries type/price/rationale, not direction).
+function orderDirection(r){
+  const sig = r.panel && r.panel.ml_risk && r.panel.ml_risk.signal;
+  if(sig==='Buy'||sig==='Strong Buy') return 'buy';
+  if(sig==='Sell'||sig==='Strong Sell'||sig==='Reduce') return 'sell';
+  return null;
+}
+function orderCell(oh,r){
+  if(!oh) return '—';
+  const dir = orderDirection(r);
+  const cls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
+  const typeLabel = oh.type==='market' ? 'Market' : 'Limit';
+  const priceStr = oh.price!=null ? ` @ ${oh.price}` : '';
+  return `<span class="num ${cls}">${esc(typeLabel)}${priceStr}</span>`;
+}
 
 // "Backtest" column preset: slim per-ticker metrics from the deployed model
 // (scripts/backtest_metrics.py via ensureMetrics()), independent of the
@@ -610,13 +800,42 @@ function drawPerf(perf){
 }
 
 /** Loads the report manifest and renders the newest report. */
+// Input/research/*.csv lists (training/research universes) -- hidden from the
+// picker by default, revealed via the "..." toggle (#report-research-toggle).
+// Fetched once, cached like allocation/metrics/holdings above.
+let researchListsData = null;
+let researchListsTried = false;
+let showResearchLists = false;
+let _lastIndexList = null; // raw GET /api/stocks/index payload, re-used when the toggle flips
+
+async function ensureResearchLists(){
+  if(researchListsTried) return researchListsData;
+  researchListsTried = true;
+  try{
+    const url = getActiveBase() + CONFIG.STOCKS_RESEARCH_LISTS_PATH;
+    researchListsData = await apiJson(url);
+  }catch(err){
+    researchListsData = [];
+    console.warn('research_lists fetch failed:', err.message);
+  }
+  return researchListsData;
+}
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const reportByListUrl = (list, asof) =>
+  getActiveBase() + CONFIG.STOCKS_REPORT_PATH + '?list=' + encodeURIComponent(list) + '&asof=' + encodeURIComponent(asof);
+
 export async function loadReports(){
   await loadLists();
-  ensureAllocation(); // fire-and-forget: pre-warms the cache so the Allokation sub-tab is ready
-  ensureMetrics();    // fire-and-forget: pre-warms so the Backtest preset is ready on first pick
+  ensureAllocation();       // fire-and-forget: pre-warms the cache so the Allokation sub-tab is ready
+  ensureMetrics();          // fire-and-forget: pre-warms so the Backtest preset is ready on first pick
+  await ensureResearchLists(); // needed before the first populateReports() call so the toggle works immediately
   const list = await apiJson(indexUrl());
   const file = populateReports(list);
-  if(file){
+  if(file === 'FRESH'){
+    // A never-emitted research list is the default selection — populateReports()
+    // already kicked off its own lazy fetch+load(); nothing more to do here.
+  } else if(file){
     const data = await apiJson(reportUrl(file));
     load(data);
   } else {
@@ -635,34 +854,76 @@ function fillDates(groups, listName, dateSel){
   return items.length?items[0].file:null; // newest first → index 0 = latest
 }
 
+// Select+load a research list that has never been emitted (no index.json
+// entries yet): fetch today's asof via the lazy ?list=&asof= form instead of
+// the normal file-based date picker.
+function loadFreshResearchList(key, dateSel){
+  if(dateSel){ dateSel.innerHTML=''; dateSel.style.display='none'; }
+  apiJson(reportByListUrl(key, todayISO())).then(load)
+    .catch(err=>setViewerError('Report konnte nicht generiert werden: '+err.message));
+}
+
 function populateReports(list){
+  _lastIndexList = list;
   const sel=$('#report');
   const dateSel=$('#report-date');
+  const toggle=$('#report-research-toggle');
   if(!sel) return null;
+
+  const researchKeys = new Set((researchListsData||[]).map(r=>r.key));
+  if(toggle) toggle.style.display = researchKeys.size ? '' : 'none';
+
   if(!list||!list.length){
-    sel.style.display='none';
-    if(dateSel) dateSel.style.display='none';
-    return null;
+    // No reports exist for ANY list yet -- still offer never-emitted research
+    // lists if the toggle is on, so a first-time pick is possible.
+    if(!showResearchLists || !researchKeys.size){
+      sel.style.display='none';
+      if(dateSel) dateSel.style.display='none';
+      return null;
+    }
+    sel.innerHTML=[...researchKeys].map(k=>`<option value="${esc(k)}">${esc(labelFor(k))}</option>`).join('');
+    sel.value=[...researchKeys][0];
+    sel.style.display='';
+    sel.onchange=()=>loadFreshResearchList(sel.value, dateSel);
+    loadFreshResearchList(sel.value, dateSel);
+    return 'FRESH';
   }
+
   // Group by list name; newest-first order preserved within each group.
   const groups=new Map();
   for(const e of list){ const k=e.portfolio||e.file; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(e); }
-  // List selector — one option per list
-  sel.innerHTML=[...groups.keys()].map(name=>`<option value="${esc(name)}">${esc(labelFor(name))}</option>`).join('');
-  sel.value=groups.has('Portfolio')?'Portfolio':[...groups.keys()][0];
+
+  const mainKeys = [...groups.keys()].filter(k=>!researchKeys.has(k));
+  const researchGroupKeys = [...groups.keys()].filter(k=>researchKeys.has(k));
+  const researchFreshKeys = showResearchLists ? [...researchKeys].filter(k=>!groups.has(k)) : [];
+
+  const optHtml = k => `<option value="${esc(k)}">${esc(labelFor(k))}</option>`;
+  let html = mainKeys.map(optHtml).join('');
+  if(showResearchLists && (researchGroupKeys.length || researchFreshKeys.length)){
+    html += `<optgroup label="Research">${
+      [...researchGroupKeys, ...researchFreshKeys].map(optHtml).join('')
+    }</optgroup>`;
+  }
+  sel.innerHTML = html;
+  sel.value = mainKeys.includes('Portfolio') ? 'Portfolio' : (mainKeys[0] || sel.options[0]?.value);
   sel.style.display='';
-  // Populate date dropdown for the default list; capture file to load
-  const file=fillDates(groups,sel.value,dateSel);
-  // Wire list change: repopulate dates, load latest
+
+  const isFresh = k => researchFreshKeys.includes(k);
   sel.onchange=()=>{
-    const f=fillDates(groups,sel.value,dateSel);
-    if(f) apiJson(reportUrl(f)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
+    if(isFresh(sel.value)) loadFreshResearchList(sel.value, dateSel);
+    else {
+      const f=fillDates(groups,sel.value,dateSel);
+      if(f) apiJson(reportUrl(f)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
+    }
   };
-  // Wire date change: load chosen date
   if(dateSel) dateSel.onchange=()=>{
     if(dateSel.value) apiJson(reportUrl(dateSel.value)).then(load).catch(err=>setViewerError('Report konnte nicht geladen werden: '+err.message));
   };
-  return file;
+  if(isFresh(sel.value)){
+    loadFreshResearchList(sel.value, dateSel);
+    return 'FRESH';
+  }
+  return fillDates(groups,sel.value,dateSel);
 }
 
 // Populate the chart-ticker <select> in the Charts tab.
@@ -711,6 +972,8 @@ function sortVal(r,key,cols){
   }
   // Consensus column: sort by score
   if(key==='Cons.' && v && typeof v.score==='number') return v.score;
+  // Order column: sort buy > sell > none (v is the order_hint object, not a scalar)
+  if(key==='Order'){ const d=orderDirection(r); return d==='buy'?2:(d==='sell'?1:0); }
   // Legacy string rank (back-compat for any remaining string signals)
   if(typeof v==='string' && recRank[v]) return recRank[v];
   return v;
@@ -782,7 +1045,7 @@ function openRowSheet(ticker){
     (consHtml&&consHtml!=='—')?
       `<div class="rs-metric"><span class="rs-metric-label">Cons.</span><span class="rs-metric-value">${consHtml}</span></div>`:'',
   ].join('');
-  const skipCols=new Set(['Ticker','Name','Cons.']);
+  const skipCols=new Set(['Ticker','Name','Cons.','Order']); // Order has its own dedicated section below (with rationale)
   const metricsHtml=COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('');
@@ -794,12 +1057,15 @@ function openRowSheet(ticker){
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('') : '';
   // Order-execution hint: only present when the report carries one (active Buy/Sell
-  // on the production ML signal) -- see functions/order_hint.py.
+  // on the production ML signal) -- see functions/order_hint.py. Same green/red
+  // buy/sell coloring as the Order column in Übersicht (orderCell/orderDirection).
   const oh = r.order_hint;
+  const orderDir = orderDirection(r);
+  const orderCls = orderDir==='buy' ? 'pos' : (orderDir==='sell' ? 'neg' : '');
   const orderHtml = oh ? `<div class="row-sheet-section">
     <div class="row-sheet-section-label">Ordervorschlag</div>
     <div class="rs-metrics">
-      <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price):''}</span></div>
+      <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value num ${orderCls}">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price):''}</span></div>
     </div>
     <div class="rs-order-rationale">${esc(oh.rationale||'')}</div>
   </div>` : '';
@@ -953,14 +1219,20 @@ export function renderAllocation(){
   const tbl=$('#alloc-tbl');
   const a = allocationData;
   const metaEl=$('#alloc-meta'), hybridEl=$('#alloc-hybrid'), footEl=$('#alloc-foot');
+  const schemeSel=$('#alloc-scheme-sel'), tradesEl=$('#alloc-trades');
 
   if(!a){
     if(metaEl){ metaEl.style.display=''; metaEl.textContent='Allokation nicht verfügbar.'; }
     if(hybridEl){ hybridEl.style.display='none'; hybridEl.innerHTML=''; }
     if(tbl) tbl.style.display='none';
     if(footEl){ footEl.style.display='none'; footEl.innerHTML=''; }
+    if(schemeSel) schemeSel.style.display='none';
+    if(tradesEl){ tradesEl.style.display='none'; tradesEl.innerHTML=''; }
     return;
   }
+
+  if(schemeSel) schemeSel.style.display='';
+  const scheme = (schemeSel && schemeSel.value) || 'hybrid';
 
   if(metaEl){
     metaEl.style.display='';
@@ -968,57 +1240,76 @@ export function renderAllocation(){
   }
 
   if(hybridEl){
-    if(a.hybrid){
+    if(a.hybrid && scheme==='hybrid'){
       hybridEl.style.display='';
-      hybridEl.innerHTML = renderHybridHtml(a.hybrid)
-        + '<p class="section-label alloc-hint">Research-Zielschema #5</p>'
-        + metricsBoxHtml(a.scheme5_metrics);
+      hybridEl.innerHTML = renderHybridHtml(a.hybrid);
     } else {
       hybridEl.style.display='none';
       hybridEl.innerHTML='';
     }
   }
 
-  if(tbl) tbl.style.display='';
-  const tr=document.createElement('tr');
-  ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
-  const thead=$('#alloc-tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
+  if(tbl) tbl.style.display = scheme==='scheme5' ? '' : 'none';
+  if(scheme==='scheme5'){
+    const tr=document.createElement('tr');
+    ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
+    const thead=$('#alloc-tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
 
-  const sleeves = (a.sleeves||[]).slice().sort((x,y)=>
-    ((y.hold_primary_pct||0)+(y.hold_1x_pct||0)) - ((x.hold_primary_pct||0)+(x.hold_1x_pct||0)));
+    const sleeves = (a.sleeves||[]).slice().sort((x,y)=>
+      ((y.hold_primary_pct||0)+(y.hold_1x_pct||0)) - ((x.hold_primary_pct||0)+(x.hold_1x_pct||0)));
 
-  const tb=$('#alloc-tbl tbody'); tb.innerHTML='';
-  for(const s of sleeves){
-    const row=document.createElement('tr');
-    const badge2x = s.primary_is_2x ? '<span class="badge-2x">2×</span>' : '';
-    const shift = (s.shift_1x_ticker && isNum(s.hold_1x_pct) && s.hold_1x_pct>0)
-      ? `${fPct((s.hold_1x_pct||0)/100)} ${esc(s.shift_1x_ticker)}`
-      : '—';
-    const cells = [
-      `${esc(s.primary_ticker||s.sleeve||'')}`,
-      esc(s.axis||''),
-      fPct((s.conviction_pct||0)/100),
-      `${fPct((s.hold_primary_pct||0)/100)}${badge2x}`,
-      shift,
-      fPct((s.cash_pct||0)/100),
-    ];
-    cells.forEach((html,i)=>{ const td=document.createElement('td'); td.innerHTML=html;
-      if(ALLOC_COLS[i][1]==='l') td.style.textAlign='left'; row.appendChild(td); });
-    tb.appendChild(row);
+    const tb=$('#alloc-tbl tbody'); tb.innerHTML='';
+    for(const s of sleeves){
+      const row=document.createElement('tr');
+      const badge2x = s.primary_is_2x ? '<span class="badge-2x">2×</span>' : '';
+      const shift = (s.shift_1x_ticker && isNum(s.hold_1x_pct) && s.hold_1x_pct>0)
+        ? `${fPct((s.hold_1x_pct||0)/100)} ${esc(s.shift_1x_ticker)}`
+        : '—';
+      const cells = [
+        `${esc(s.primary_ticker||s.sleeve||'')}`,
+        esc(s.axis||''),
+        fPct((s.conviction_pct||0)/100),
+        `${fPct((s.hold_primary_pct||0)/100)}${badge2x}`,
+        shift,
+        fPct((s.cash_pct||0)/100),
+      ];
+      cells.forEach((html,i)=>{ const td=document.createElement('td'); td.innerHTML=html;
+        if(ALLOC_COLS[i][1]==='l') td.style.textAlign='left'; row.appendChild(td); });
+      tb.appendChild(row);
+    }
   }
 
   if(footEl){
-    footEl.style.display='';
-    const caveats = Array.isArray(a.caveats) ? a.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
-    footEl.innerHTML = `
-      <div class="alloc-totals">
-        <span><b>${fPct((a.in_1x_twins_pct||0)/100)}</b> in 1× Twins</span>
-        <span><b>${fPct((a.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
-      </div>
-      <p class="hint alloc-hint">${esc(a.derisk_rule||'')}</p>
-      <p class="hint alloc-hint">${esc(a.cash_destination||'')}</p>
-      ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
-    `;
+    if(scheme==='scheme5'){
+      footEl.style.display='';
+      const caveats = Array.isArray(a.caveats) ? a.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
+      footEl.innerHTML = `
+        <div class="alloc-totals">
+          <span><b>${fPct((a.in_1x_twins_pct||0)/100)}</b> in 1× Twins</span>
+          <span><b>${fPct((a.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
+        </div>
+        <p class="hint alloc-hint">${esc(a.derisk_rule||'')}</p>
+        <p class="hint alloc-hint">${esc(a.cash_destination||'')}</p>
+        ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
+      `;
+    } else {
+      footEl.style.display='';
+      footEl.innerHTML = `<p class="section-label alloc-hint">Research-Zielschema #5</p>${metricsBoxHtml(a.scheme5_metrics)}`;
+    }
+  }
+
+  // Trade recommendation — needs the Portfolio list's real holdings + the
+  // exclusion list, both fetched independently of whatever list/report is
+  // currently open in Übersicht.
+  if(tradesEl){
+    tradesEl.style.display='';
+    tradesEl.innerHTML = '<p class="hint">Trades werden berechnet…</p>';
+    Promise.all([ensurePortfolioHoldings(), ensurePortfolioExclude()]).then(()=>{
+      // Guard against a stale async response landing after the user switched
+      // scheme or navigated away from the sub-tab.
+      if(!$('#alloc-trades') || ($('#alloc-scheme-sel')||{}).value !== scheme) return;
+      tradesEl.innerHTML = renderTradesHtml(computeSchemeTrades(scheme));
+    });
   }
 }
 
@@ -1378,8 +1669,21 @@ export function initViewer(){
       // Redraw perf graph using cached data
       const list = DATA && DATA.portfolio;
       if(list && perfCache.has(list)) drawPerf(perfCache.get(list));
+      if(allocationData) renderAllocation(); // trade amounts are currency-formatted too
     });
   }
+
+  // Allokation sub-tab: scheme selector re-renders the scheme block + trades
+  const schemeSel = $('#alloc-scheme-sel');
+  if(schemeSel) schemeSel.addEventListener('change', () => { if(allocationData) renderAllocation(); });
+
+  // "..." toggle: reveal Input/research/ lists in the report picker
+  const researchToggle = $('#report-research-toggle');
+  if(researchToggle) researchToggle.addEventListener('click', () => {
+    showResearchLists = !showResearchLists;
+    researchToggle.classList.toggle('active', showResearchLists);
+    if(_lastIndexList !== null) populateReports(_lastIndexList);
+  });
 
   ['c-price','c-rec','c-rsi'].forEach(id=>{ const cv=$('#'+id); if(!cv) return;
     cv.addEventListener('mousemove', onMove);

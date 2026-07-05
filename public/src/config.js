@@ -42,6 +42,8 @@ export const CONFIG = {
   STOCKS_PORTFOLIO_SERIES_PATH: '/api/stocks/portfolio_series', // GET ?list=<label>
   STOCKS_ALLOCATION_PATH: '/api/stocks/allocation', // GET → allocation_scheme5.json (scheme-#5 sleeves)
   STOCKS_METRICS_PATH: '/api/stocks/metrics', // GET → backtest_metrics.json (per-ticker slim backtest)
+  STOCKS_PORTFOLIO_EXCLUDE_PATH: '/api/stocks/portfolio_exclude', // GET → {tickers:[{ticker,name,exposure,currency,'as of'}]}
+  STOCKS_RESEARCH_LISTS_PATH: '/api/stocks/research_lists', // GET → [{key,label}] (Input/research/*.csv, hidden by default)
 
   // Abort a health check after this long to avoid long waits on unreachable
   // candidates while probeBase() races them.
