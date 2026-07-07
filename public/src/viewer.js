@@ -1088,9 +1088,18 @@ let _digestPerfFetch = null;
 /** Combined Portfolio + Portfolio_exclude total-value chart, shown at the bottom
  * of the Digest tab (portfolio-wide, independent of whatever report/list is open
  * in Übersicht) -- see combinePerf() above for the date-alignment rationale. */
-async function loadDigestPerf(){
+export async function loadDigestPerf(){
   const wrap = $('#perf-wrap');
   if(!wrap) return;
+  // Guard here, not just at each call site: this chart belongs to the Digest
+  // sub-tab only. Callers include the outer "Digest" bottom-nav tab becoming
+  // visible (pwa:tab), which fires regardless of whether the Digest|Allokation
+  // sub-tab is currently on Allokation -- without this check the chart would
+  // reappear under Allokation on e.g. Übersicht -> Digest navigation even
+  // after switchSubtab() hides it.
+  const allocPanel = $('#alloc-panel');
+  const onAlloc = allocPanel && allocPanel.style.display !== 'none';
+  if(onAlloc){ wrap.style.display = 'none'; return; }
   if(_digestPerfLoaded){
     const combined = perfCache.get('__digest_combined__');
     if(combined){ wrap.style.display=''; drawPerf(combined); }

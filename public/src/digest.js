@@ -5,7 +5,7 @@
 import { CONFIG } from './config.js';
 import { getActiveBase, authHeaders } from './localBridge.js';
 import { fmtDateTime } from './format.js';
-import { selectTickerIfPresent, ensureAllocation, renderAllocation } from './viewer.js';
+import { selectTickerIfPresent, ensureAllocation, renderAllocation, loadDigestPerf } from './viewer.js';
 
 const $ = s => document.querySelector(s);
 
@@ -192,16 +192,23 @@ const SUBTAB_KEY = 'pwa.stocks.digestSubtab';
 function switchSubtab(name) {
   const digestBtn = $('#dtab-digest'), allocBtn = $('#dtab-alloc');
   const digestPanel = $('#digest-panel'), allocPanel = $('#alloc-panel');
+  const perfWrap = $('#perf-wrap');
   const isAlloc = name === 'alloc';
   digestBtn?.classList.toggle('active', !isAlloc);
   allocBtn?.classList.toggle('active', isAlloc);
   if (digestPanel) digestPanel.style.display = isAlloc ? 'none' : '';
   if (allocPanel) allocPanel.style.display = isAlloc ? '' : 'none';
+  // The portfolio-value chart belongs to the Digest sub-tab only -- it used to
+  // stay visible (or reappear) under Allokation too because its own show/hide
+  // logic (loadDigestPerf) only checked the outer "Digest" bottom-nav tab, not
+  // which Digest|Allokation sub-tab was actually open.
+  if (perfWrap && isAlloc) perfWrap.style.display = 'none';
   try { localStorage.setItem(SUBTAB_KEY, name); } catch {}
   if (isAlloc) {
     ensureAllocation().then(renderAllocation);
-  } else if (!_loaded) {
-    loadDigest();
+  } else {
+    if (!_loaded) loadDigest();
+    loadDigestPerf();
   }
 }
 
