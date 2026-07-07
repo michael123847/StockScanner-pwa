@@ -42,6 +42,18 @@ function setCurrency(v){
   try { localStorage.setItem(CURRENCY_KEY, v); } catch {}
 }
 
+// Which allocation scheme the user has marked as the one they're actually
+// following in real life (independent of which scheme they're currently just
+// browsing in the dropdown for comparison). Purely a local reminder/label --
+// no backend concept of "active", nothing is traded automatically.
+const ACTIVE_SCHEME_KEY = 'ss_active_scheme';
+function getActiveScheme(){
+  try { return localStorage.getItem(ACTIVE_SCHEME_KEY) || null; } catch { return null; }
+}
+function setActiveScheme(v){
+  try { localStorage.setItem(ACTIVE_SCHEME_KEY, v); } catch {}
+}
+
 // ---------- table variant ----------
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 // ML is the benchmark signal column (2026-07 — Consensus, a weighted panel
@@ -187,32 +199,45 @@ async function ensurePortfolioExclude(){
 function buildSchemeTargets(schemeKey){
   const a = allocationData;
   if(!a) return null;
-  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin}}
-  const add = (tk, name, pct, meta) => {
+  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin}}
+  const add = (originalTk, name, pct, meta) => {
     if(!pct) return;
+    const tk = aliasTicker(originalTk);
+    // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
+    // one -- aliasTicker() maps it to whatever ticker Portfolio.csv holds it under
+    // for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
+    // otherwise erase the ISIN from the row entirely.
+    const fullMeta = {...(meta||{}), isin: isIsin(originalTk) ? originalTk : null};
     const prev = targets.get(tk);
     targets.set(tk, {
       name: (prev && prev.name) || name,
       pct: (prev ? prev.pct : 0) + pct,
-      meta: (prev && prev.meta) || meta || null,
+      meta: (prev && prev.meta) || fullMeta,
     });
   };
   let cashPct = 0;
-  if(schemeKey === 'hybrid' && a.hybrid){
-    for(const p of (a.hybrid.positions||[])){
-      add(aliasTicker(p.ticker), p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
+  if((schemeKey === 'hybrid' && a.hybrid) || (schemeKey === 'techheavy' && a.techheavy)){
+    const block = schemeKey === 'hybrid' ? a.hybrid : a.techheavy;
+    for(const p of (block.positions||[])){
+      add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
         {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
     }
-    cashPct += a.hybrid.cash_money_market_pct||0;
+    cashPct += block.cash_money_market_pct||0;
   } else if(schemeKey === 'scheme5'){
     for(const s of (a.sleeves||[])){
       // The primary ticker's own metadata carries the twin reference (per the
       // producer: for leveraged sleeves this is the REAL 1x twin's live
       // signal/levels, not the synthetic 2x series — see alloc_scheme5_live.py).
-      add(aliasTicker(s.primary_ticker||s.sleeve), s.sleeve, s.hold_primary_pct||0,
+      add(s.primary_ticker||s.sleeve, s.sleeve, s.hold_primary_pct||0,
         {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null});
-      if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0) add(aliasTicker(s.shift_1x_ticker), s.shift_1x_ticker, s.hold_1x_pct,
-        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: null});
+      if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0){
+        // shift_1x_ticker is a display label ("URTH (1x World)") -- the actual
+        // matchable ticker is its first token; using the full label as the map
+        // key meant this leg could never match a real Portfolio.csv holding.
+        const twinTicker = s.shift_1x_ticker.split(' ')[0];
+        add(twinTicker, s.shift_1x_ticker, s.hold_1x_pct,
+          {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: null});
+      }
       cashPct += s.cash_pct||0;
     }
   } else return null;
@@ -280,7 +305,17 @@ function computeSchemeTrades(schemeKey){
   for(const t of holdings.tickers){
     const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
     if(exclude.has(t.ticker)){ if(v > 0) excludedHeld.push(t.ticker); continue; }
-    if(v > 0){ byTicker.set(t.ticker, {value: v, name: t.name}); total += v; }
+    // The Portfolio report already computes real levels/ml_risk for every held
+    // ticker (main.py/scanner/report.py's per-row order_hint pipeline) -- reuse
+    // them for holdings outside the scheme too, instead of a blind "no data"
+    // fallback. These are real, currently-held instruments; a full-sell
+    // recommendation on one deserves the same real Market/Limit price a scheme
+    // instrument gets, not a placeholder.
+    if(v > 0){
+      const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal});
+      total += v;
+    }
   }
   if(total <= 0) return null;
 
@@ -292,19 +327,25 @@ function computeSchemeTrades(schemeKey){
   for(const [tk, {name, pct, meta}] of built.targets){
     seen.add(tk);
     const targetVal = total * pct / 100;
-    const curVal = (byTicker.get(tk)||{}).value || 0;
+    const held = byTicker.get(tk);
+    const curVal = (held||{}).value || 0;
     const trade = targetVal - curVal;
+    // Prefer the scheme's own levels (already conviction/twin-aware); fall back
+    // to the held ticker's report-sourced levels if the scheme has none for it
+    // (e.g. a scheme leg whose ticker happens to already be a real holding).
+    const levels = (meta && meta.levels) || (held && held.levels) || null;
+    const rowMeta = meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null);
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
-      rows.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, targetVal, curVal, trade,
-        meta, orderHint: orderHintJS(meta && meta.levels, dir)});
+      rows.push({ticker: tk, name: (held||{}).name || name, targetVal, curVal, trade,
+        meta: rowMeta, orderHint: orderHintJS(levels, dir)});
     }
   }
   const cashTarget = total * built.cashPct / 100;
   if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null});
-  for(const [tk, {value, name}] of byTicker){
+  for(const [tk, {value, name, levels, ml_signal}] of byTicker){
     if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
-      meta: null, orderHint: orderHintJS(null, 'sell')});
+      meta: {levels, ml_signal, twin: null}, orderHint: orderHintJS(levels, 'sell')});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
   return {total, rows, fx: holdings.fx, excludedHeld};
@@ -341,18 +382,26 @@ function computeAddCash(schemeKey, cashChf){
   for(const t of holdings.tickers){
     const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
     if(exclude.has(t.ticker)) continue;
-    if(v > 0){ byTicker.set(t.ticker, {value: v, name: t.name}); currentTotal += v; }
+    if(v > 0){
+      const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal});
+      currentTotal += v;
+    }
   }
 
   const newTotal = currentTotal + cashChf;
   const DUST_PCT = 0.5; // same threshold as computeSchemeTrades
 
   // Build every target leg (incl. the cash/Geldmarkt leg) with its shortfall.
+  // Prefer the scheme's own levels; fall back to a held ticker's report-sourced
+  // levels if the scheme has none for it (same rationale as computeSchemeTrades).
   const legs = [];
   for(const [tk, {name, pct, meta}] of built.targets){
     const targetVal = newTotal * pct / 100;
-    const curVal = (byTicker.get(tk)||{}).value || 0;
-    legs.push({ticker: tk, name: (byTicker.get(tk)||{}).name || name, pct, curVal, meta,
+    const held = byTicker.get(tk);
+    const curVal = (held||{}).value || 0;
+    const legMeta = meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null);
+    legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
       shortfall: Math.max(0, targetVal - curVal)});
   }
   if(built.cashPct > 0){
@@ -1502,13 +1551,25 @@ export function renderAllocation(){
 
   if(metaEl){
     metaEl.style.display='';
-    metaEl.innerHTML = `<b>${esc(a.label||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}`;
+    const activeBadge = getActiveScheme()===scheme
+      ? ' <span class="badge-active" style="color:#4ade80;font-weight:600;">● AKTIV</span>' : '';
+    metaEl.innerHTML = `<b>${esc(a.label||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${activeBadge}`;
+  }
+
+  const activateBtn = $('#alloc-activate-btn');
+  if(activateBtn){
+    activateBtn.style.display='';
+    const isActive = getActiveScheme()===scheme;
+    activateBtn.textContent = isActive ? '✓ Aktiv' : 'Aktivieren';
+    activateBtn.disabled = isActive;
+    activateBtn.className = isActive ? 'active' : '';
   }
 
   if(hybridEl){
-    if(a.hybrid && scheme==='hybrid'){
+    const block = scheme==='hybrid' ? a.hybrid : (scheme==='techheavy' ? a.techheavy : null);
+    if(block){
       hybridEl.style.display='';
-      hybridEl.innerHTML = renderHybridHtml(a.hybrid);
+      hybridEl.innerHTML = renderHybridHtml(block);
     } else {
       hybridEl.style.display='none';
       hybridEl.innerHTML='';
@@ -1559,8 +1620,10 @@ export function renderAllocation(){
         ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
       `;
     } else {
-      footEl.style.display='';
-      footEl.innerHTML = `<p class="section-label alloc-hint">Research-Zielschema #5</p>${metricsBoxHtml(a.scheme5_metrics)}`;
+      // hybrid/techheavy: their own note+metrics are already inside
+      // renderHybridHtml (hybridEl above) -- nothing scheme5-specific to add here.
+      footEl.style.display='none';
+      footEl.innerHTML='';
     }
   }
 
@@ -1974,6 +2037,17 @@ export function initViewer(){
   const schemeSel = $('#alloc-scheme-sel');
   if(schemeSel) schemeSel.addEventListener('change', () => { if(allocationData) renderAllocation(); });
 
+  // "Aktivieren" — mark the currently-viewed scheme as the one actually being
+  // followed (local label only, see getActiveScheme/setActiveScheme).
+  const activateBtn = $('#alloc-activate-btn');
+  if(activateBtn){
+    activateBtn.addEventListener('click', () => {
+      const cur = ($('#alloc-scheme-sel')||{}).value || 'hybrid';
+      setActiveScheme(cur);
+      if(allocationData) renderAllocation();
+    });
+  }
+
   // Add-cash input — debounced recompute, independent of the full renderAllocation()
   let _addCashTimer = null;
   const addCashInput = $('#alloc-addcash');
@@ -2047,9 +2121,11 @@ export function initViewer(){
     });
   });
 
-  // Initialize from the current DOM: the restored tab may already be Charts,
-  // whose pwa:tab event fired during initTabs() before this listener existed.
+  // Initialize from the current DOM: the restored tab (localStorage 'pwa.stocks.tab')
+  // may already be Digest or Charts, whose pwa:tab event fired during initTabs()
+  // synchronously on page load, before this listener existed to catch it.
   chartsVisible = document.getElementById('page-charts')?.classList.contains('active') || false;
+  if(document.getElementById('page-digest')?.classList.contains('active')) loadDigestPerf();
   // Track Charts tab visibility — hidden page has clientWidth==0.
   window.addEventListener('pwa:tab', e=>{
     // A chart hover tooltip has no natural "leave" event when the user taps a

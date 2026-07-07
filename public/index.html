@@ -46,10 +46,14 @@
     </div>
 
     <div id="alloc-panel" style="display:none">
-      <select id="alloc-scheme-sel" title="Schema wählen" style="display:none">
-        <option value="hybrid">Hybrid 55/15/15/15 (real-money)</option>
-        <option value="scheme5">#5 Sharpshooter (Research)</option>
-      </select>
+      <div class="alloc-scheme-row" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <select id="alloc-scheme-sel" title="Schema wählen" style="display:none">
+          <option value="hybrid">Hybrid 55/15/15/15 (real-money)</option>
+          <option value="scheme5">#5 Sharpshooter (Research)</option>
+          <option value="techheavy">Tech Heavy (Research, T1)</option>
+        </select>
+        <button id="alloc-activate-btn" type="button" class="info-btn" style="display:none;flex:none;min-width:0;padding:8px 14px;">Aktivieren</button>
+      </div>
       <div id="alloc-meta" class="hint" style="display:none"></div>
       <div id="alloc-hybrid" style="display:none"></div>
       <div class="table-scroll">
