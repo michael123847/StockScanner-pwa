@@ -156,15 +156,39 @@ async function ensurePortfolioHoldings(){
   return portfolioHoldingsData;
 }
 
-// Scheme-side ticker -> the ticker actually used in Input/Portfolio.csv. Only
-// needed for instruments the user already holds under a different alias —
-// gold/bond legs aren't held yet, so they need no entry (target - 0 is correct
-// regardless of ticker spelling).
+// Scheme-side ticker -> the ticker actually used in Input/Portfolio.csv, for
+// identity aliases only (same instrument, different code spelling). Proxy
+// relationships (scheme wants QQQ, Portfolio.csv actually holds XNAS.SW as
+// its declared substitute) are NOT identity and are resolved dynamically
+// below from each holding's own 'proxy' column instead of hard-coded here.
 const PORTFOLIO_TICKER_ALIAS = {
   'CH0032831981': 'AVADIS',  // Avadis fund: hybrid scheme uses the ISIN, Portfolio.csv a plain alias
-  'BTC': 'BTC-USD',          // scheme5 sleeve ticker vs. the yfinance/Portfolio.csv ticker
 };
-const aliasTicker = t => PORTFOLIO_TICKER_ALIAS[t] || t;
+
+// proxy ticker (e.g. QQQ, the scheme's Nasdaq-100 leg) -> the ticker
+// Portfolio.csv actually holds for it (e.g. XNAS.SW), read live from each
+// holding's 'proxy' column (input/Portfolio.csv) via the report JSON's
+// holding.proxy field (main.py). Rebuilt from the latest portfolioHoldingsData
+// on every call so it always reflects the current CSV, never a stale guess.
+function buildProxyAliasMap(){
+  const map = {};
+  const tickers = (portfolioHoldingsData && portfolioHoldingsData.tickers) || [];
+  for(const t of tickers){
+    const proxy = t.holding && t.holding.proxy;
+    if(proxy && String(proxy).trim()) map[String(proxy).trim()] = t.ticker;
+  }
+  return map;
+}
+
+// Resolves a scheme-side ticker to the Portfolio.csv ticker to match against.
+// viaProxy tells the caller the match is a *different* instrument standing in
+// for the scheme leg (different price series) -- as opposed to an identity
+// alias or a direct match, where the scheme leg's own levels are correct.
+function resolveAliasedTicker(t, proxyMap){
+  if(PORTFOLIO_TICKER_ALIAS[t]) return {ticker: PORTFOLIO_TICKER_ALIAS[t], viaProxy: false};
+  if(proxyMap[t]) return {ticker: proxyMap[t], viaProxy: true};
+  return {ticker: t, viaProxy: false};
+}
 
 // Holdings excluded from the trade-recommendation pool entirely (not counted
 // in the total, never recommended for sale) -- e.g. an ESAP employee plan,
@@ -199,15 +223,16 @@ async function ensurePortfolioExclude(){
 function buildSchemeTargets(schemeKey){
   const a = allocationData;
   if(!a) return null;
-  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin}}
+  const proxyMap = buildProxyAliasMap();
+  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy}}
   const add = (originalTk, name, pct, meta) => {
     if(!pct) return;
-    const tk = aliasTicker(originalTk);
+    const {ticker: tk, viaProxy} = resolveAliasedTicker(originalTk, proxyMap);
     // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
-    // one -- aliasTicker() maps it to whatever ticker Portfolio.csv holds it under
-    // for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
+    // one -- resolveAliasedTicker() maps it to whatever ticker Portfolio.csv holds
+    // it under for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
     // otherwise erase the ISIN from the row entirely.
-    const fullMeta = {...(meta||{}), isin: isIsin(originalTk) ? originalTk : null};
+    const fullMeta = {...(meta||{}), isin: isIsin(originalTk) ? originalTk : null, viaProxy};
     const prev = targets.get(tk);
     targets.set(tk, {
       name: (prev && prev.name) || name,
@@ -330,11 +355,17 @@ function computeSchemeTrades(schemeKey){
     const held = byTicker.get(tk);
     const curVal = (held||{}).value || 0;
     const trade = targetVal - curVal;
-    // Prefer the scheme's own levels (already conviction/twin-aware); fall back
-    // to the held ticker's report-sourced levels if the scheme has none for it
-    // (e.g. a scheme leg whose ticker happens to already be a real holding).
-    const levels = (meta && meta.levels) || (held && held.levels) || null;
-    const rowMeta = meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null);
+    // A proxy-matched leg (scheme wants QQQ, Portfolio.csv holds XNAS.SW as its
+    // declared proxy) MUST price off the actually-held instrument -- QQQ and
+    // XNAS.SW track closely but are different tickers on different price
+    // scales, so the scheme's own QQQ levels would produce a nonsense limit
+    // price for an XNAS.SW order. Otherwise prefer the scheme's own levels
+    // (already conviction/twin-aware); fall back to the held ticker's
+    // report-sourced levels if the scheme has none for it.
+    const viaProxy = meta && meta.viaProxy && held && held.levels;
+    const levels = viaProxy ? held.levels : ((meta && meta.levels) || (held && held.levels) || null);
+    const rowMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+      : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
       rows.push({ticker: tk, name: (held||{}).name || name, targetVal, curVal, trade,
@@ -394,13 +425,16 @@ function computeAddCash(schemeKey, cashChf){
 
   // Build every target leg (incl. the cash/Geldmarkt leg) with its shortfall.
   // Prefer the scheme's own levels; fall back to a held ticker's report-sourced
-  // levels if the scheme has none for it (same rationale as computeSchemeTrades).
+  // levels if the scheme has none for it (same rationale as computeSchemeTrades,
+  // including the proxy-match override -- see there for why).
   const legs = [];
   for(const [tk, {name, pct, meta}] of built.targets){
     const targetVal = newTotal * pct / 100;
     const held = byTicker.get(tk);
     const curVal = (held||{}).value || 0;
-    const legMeta = meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null);
+    const viaProxy = meta && meta.viaProxy && held && held.levels;
+    const legMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+      : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
       shortfall: Math.max(0, targetVal - curVal)});
   }
@@ -1560,9 +1594,15 @@ export function renderAllocation(){
 
   if(metaEl){
     metaEl.style.display='';
+    // a.label is scheme5's own top-level label -- hybrid/techheavy carry their
+    // own label on their block instead, so the header must pick the one
+    // matching the currently selected scheme, not always the top-level one.
+    const schemeLabel = scheme==='hybrid' ? (a.hybrid && a.hybrid.label)
+      : scheme==='techheavy' ? (a.techheavy && a.techheavy.label)
+      : a.label;
     const activeBadge = getActiveScheme()===scheme
       ? ' <span class="badge-active" style="color:#4ade80;font-weight:600;">● AKTIV</span>' : '';
-    metaEl.innerHTML = `<b>${esc(a.label||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${activeBadge}`;
+    metaEl.innerHTML = `<b>${esc(schemeLabel||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${activeBadge}`;
   }
 
   const activateBtn = $('#alloc-activate-btn');
