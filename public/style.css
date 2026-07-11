@@ -143,6 +143,12 @@ td a:hover{text-decoration:underline}
 .hint{color:var(--text-dim);font-size:12px}
 
 /* ── Allocation view ─────────────────────────────────────────────────────── */
+#alloc-panel>div{margin-top:14px}
+#alloc-panel>div:first-child{margin-top:0}
+.alloc-scheme-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#alloc-scheme-sel{flex:1 1 200px;min-width:0;max-width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:14px;font-family:inherit}
+#alloc-scheme-sel:focus{outline:none;border-color:var(--accent)}
+.alloc-research-badge{display:inline-block;margin-left:5px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;color:var(--warn);background:rgba(255,184,0,.15);vertical-align:middle}
 #alloc-meta{margin:0 0 8px}
 .alloc-totals{display:flex;gap:18px;flex-wrap:wrap;margin:10px 2px 4px;font-size:13px}
 .alloc-totals b{color:var(--text)}
@@ -158,6 +164,11 @@ td a:hover{text-decoration:underline}
 .alloc-addcash-panel #alloc-addcash:focus{outline:none;border-color:var(--accent)}
 .alloc-trade-row{cursor:pointer}
 .alloc-trade-row:active{background:rgba(255,255,255,.05)}
+/* Trades table Jetzt/Ziel/Trade columns: narrow viewports keep the 2-column
+   Position/Order layout (same data is one tap away in the detail sheet);
+   wider ones get the extra columns instead of empty margin. */
+.wide-col{display:none}
+@media (min-width:700px){ .wide-col{display:table-cell} }
 /* Copy button: small inline glyph next to a copyable value (ISIN, order level) */
 .copy-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0 2px;vertical-align:middle;line-height:1}
 .copy-btn:hover{color:var(--text)}
@@ -251,8 +262,11 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .pf-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .pf-table th{text-align:left;padding:6px 8px;color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--card-border)}
 .pf-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}
-.pf-table td[contenteditable]{outline:none;cursor:text}
-.pf-table td[contenteditable]:focus{background:rgba(255,255,255,.05);border-radius:4px}
+.pf-table td[contenteditable],.pf-table td span[contenteditable]{outline:none;cursor:text}
+.pf-table td[contenteditable]:focus,.pf-table td span[contenteditable]:focus{background:rgba(255,255,255,.05);border-radius:4px}
+.pf-isin-sub{cursor:pointer}
+.pf-isin-sub:hover{color:var(--text)}
+.pf-isin-sub.copied{color:var(--buy)}
 /* 6-column widths: Ticker | Name | Exposure | Ccy | ⇄ | ✕ */
 .pf-table th:nth-child(1),.pf-table td:nth-child(1){width:76px}
 .pf-table th:nth-child(2),.pf-table td:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -66,19 +66,44 @@ function buildTable(entries) {
   return tbl;
 }
 
-function buildRow({ ticker = '', name = '', exposure = '', currency = '', 'as of': asOf = '' } = {}) {
+function buildRow({ ticker = '', name = '', exposure = '', currency = '', isin = '', 'as of': asOf = '' } = {}) {
   const tr = document.createElement('tr');
   // Store original as-of so collectRows can preserve it when exposure is unchanged
   tr.dataset.asOf = asOf || '';
 
-  ['ticker', 'name'].forEach(field => {
-    const td = document.createElement('td');
-    td.contentEditable = 'true';
-    td.dataset.field = field;
-    td.textContent = field === 'ticker' ? ticker : name;
-    td.addEventListener('input', () => { _state[_activeList].dirty = true; });
-    tr.appendChild(td);
-  });
+  const tickerTd = document.createElement('td');
+  tickerTd.contentEditable = 'true';
+  tickerTd.dataset.field = 'ticker';
+  tickerTd.textContent = ticker;
+  tickerTd.addEventListener('input', () => { _state[_activeList].dirty = true; });
+  tr.appendChild(tickerTd);
+
+  // Name — editable span + a read-only ISIN sub-line (tap to copy) when the
+  // CSV row carries one. isin is display-only: it's never read back by
+  // collectRows()/save(), so it can't be corrupted by editing the name.
+  const nameTd = document.createElement('td');
+  const nameSpan = document.createElement('span');
+  nameSpan.contentEditable = 'true';
+  nameSpan.dataset.field = 'name';
+  nameSpan.textContent = name;
+  nameSpan.addEventListener('input', () => { _state[_activeList].dirty = true; });
+  nameTd.appendChild(nameSpan);
+  if (isin) {
+    const isinSub = document.createElement('div');
+    isinSub.className = 'cell-sub pf-isin-sub';
+    isinSub.textContent = isin;
+    isinSub.title = 'ISIN — antippen zum Kopieren';
+    isinSub.addEventListener('click', async e => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(isin);
+        isinSub.classList.add('copied');
+        setTimeout(() => isinSub.classList.remove('copied'), 1200);
+      } catch { /* clipboard unavailable — silent, non-critical */ }
+    });
+    nameTd.appendChild(isinSub);
+  }
+  tr.appendChild(nameTd);
 
   // Exposure — shown as label; double-click opens edit popup
   const expTd = document.createElement('td');
@@ -319,11 +344,16 @@ async function load(list) {
     // Normalize keys to lowercase so CSV rows with capitalized headers
     // (Ticker, Name, Exposure, Currency, as of) map correctly to buildRow.
     const _lc = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]));
+    // isin round-trips through pandas/JSON as the literal string "nan" when
+    // unset (existing backend quirk) -- filter that out here so buildRow()
+    // only ever sees a real ISIN or ''.
+    const isIsinCol = v => v && String(v).toLowerCase() !== 'nan';
     const entries = (await r.json()).map(e => { const n = _lc(e); return {
       ticker:   n.ticker   || '',
       name:     n.name     || '',
       exposure: n.exposure != null ? n.exposure : '',
       currency: n.currency || '',
+      isin:     isIsinCol(n.isin) ? n.isin : '',
       'as of':  n['as of'] || '',
     }; });
     $body.innerHTML = '';

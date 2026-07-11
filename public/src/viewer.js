@@ -108,9 +108,10 @@ function updateSchemeDropdownLabels(a){
   const sel = $('#alloc-scheme-sel');
   if(!sel || !a) return;
   const labelsByValue = {
-    hybrid:    a.hybrid && a.hybrid.label,
-    scheme5:   a.label,
-    techheavy: a.techheavy && a.techheavy.label,
+    hybrid:    a.hybrid && (a.hybrid.short_label || a.hybrid.label),
+    scheme5:   a.short_label || a.label,
+    techheavy: a.techheavy && (a.techheavy.short_label || a.techheavy.label),
+    cashout:   a.cashout && (a.cashout.short_label || a.cashout.label),
   };
   for(const opt of sel.options){
     const label = labelsByValue[opt.value];
@@ -275,8 +276,12 @@ function buildSchemeTargets(schemeKey){
     });
   };
   let cashPct = 0;
-  if((schemeKey === 'hybrid' && a.hybrid) || (schemeKey === 'techheavy' && a.techheavy)){
-    const block = schemeKey === 'hybrid' ? a.hybrid : a.techheavy;
+  // Any "positions"-shaped block (hybrid/techheavy/cashout/…) shares this
+  // branch -- adding a new scheme to the producer's JSON needs no new PWA
+  // branch here as long as it follows the same shape.
+  const positionsBlock = (a[schemeKey] && Array.isArray(a[schemeKey].positions)) ? a[schemeKey] : null;
+  if(positionsBlock){
+    const block = positionsBlock;
     for(const p of (block.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
         {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
@@ -490,6 +495,75 @@ function computeAddCash(schemeKey, cashChf){
   return {cash: cashChf, rows, fx: holdings.fx};
 }
 
+// Structural mirror of computeAddCash() for the opposite flow: raising W CHF
+// by selling down toward the scheme's target weights. Sell-only, from each
+// leg's excess over its POST-withdrawal target (newTotal = currentTotal-W,
+// so target weights are evaluated against the smaller post-withdrawal book,
+// not today's total) -- proportionally while excess covers W, pro-rata by
+// weight for any remainder once every leg's excess is exhausted. Unlike
+// computeAddCash, the scheme's own cash/money-market target is NOT a leg
+// here: that leg has no tracked curVal (computeAddCash hardcodes it to 0),
+// so treating it symmetrically would recommend "selling" untracked cash.
+// The withdrawal amount is instead surfaced as one fixed CASH receipt row.
+function computeWithdrawal(schemeKey, cashChf){
+  const built = buildSchemeTargets(schemeKey);
+  const holdings = portfolioHoldingsData;
+  if(!built || !holdings || !Array.isArray(holdings.tickers)) return null;
+  if(!isNum(cashChf) || cashChf <= 0) return null;
+
+  const exclude = portfolioExcludeData || new Set();
+  const byTicker = new Map();
+  let currentTotal = 0;
+  for(const t of holdings.tickers){
+    const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
+    if(exclude.has(t.ticker)) continue;
+    if(v > 0){
+      const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
+      currentTotal += v;
+    }
+  }
+  if(currentTotal <= 0) return null;
+
+  // Can never withdraw more than the (exclusions-adjusted) book holds.
+  const W = Math.min(cashChf, currentTotal);
+  const newTotal = currentTotal - W;
+
+  const legs = [];
+  for(const [tk, {name, pct, meta}] of built.targets){
+    const targetVal = newTotal * pct / 100;
+    const held = byTicker.get(tk);
+    const curVal = (held||{}).value || 0;
+    const viaProxy = meta && meta.viaProxy && held && held.levels;
+    const legMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+      : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
+    legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
+      orderHints: (held||{}).orderHints || null,
+      excess: Math.max(0, curVal - targetVal)});
+  }
+
+  const sumExcess = legs.reduce((s, l) => s + l.excess, 0);
+  const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
+  // Math.min(l.curVal, …) in every branch: cheap, always-correct insurance
+  // that no leg is ever asked to sell more than it actually holds, so this
+  // holds regardless of which branch's algebra applies at the edges.
+  let rows;
+  if(sumExcess <= 0){
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints}));
+  } else if(sumExcess <= W){
+    const remainder = W - sumExcess;
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, l.excess + remainder * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints}));
+  } else {
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.excess / sumExcess), meta: l.meta, orderHints: l.orderHints}));
+  }
+
+  rows = rows.filter(r => r.amount > 0 && r.amount / W * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
+  rows.sort((x,y) => y.amount - x.amount);
+  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.sell : null, 'sell'); });
+  rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', amount: W, meta: null, orderHints: null, orderHint: null});
+  return {cash: W, rows, fx: holdings.fx};
+}
+
 // Same green/red convention as the Übersicht Order column (orderCell/orderDirection).
 function allocOrderCell(oh, dir){
   if(!oh) return '<span class="num">—</span>';
@@ -503,22 +577,36 @@ function allocOrderCell(oh, dir){
 // round-tripping row objects through HTML data-attributes).
 let _lastTradesResult = null;
 let _lastAddCashResult = null;
+let _lastWithdrawalResult = null;
 
 function renderTradesHtml(result){
   _lastTradesResult = result;
   if(!result || !result.rows.length){
     return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (keine Trades &gt; 0.5% oder &gt;1000 CHF).</p>`;
   }
-  const rows = result.rows.map((r,i) => `<tr class="alloc-trade-row" data-kind="trade" data-idx="${i}">
+  const currency = getCurrency();
+  // Jetzt/Ziel/Trade: same values already shown per-row in the detail sheet
+  // (openTradeSheet) -- .wide-col hides them below ~700px so mobile keeps the
+  // narrow 2-column layout while desktop doesn't waste its width.
+  const rows = result.rows.map((r,i) => {
+    const tradeCls = r.trade>0?'pos':(r.trade<0?'neg':'');
+    return `<tr class="alloc-trade-row" data-kind="trade" data-idx="${i}">
     <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td class="wide-col">${convertCHF(r.curVal, currency, result.fx)}</td>
+    <td class="wide-col">${convertCHF(r.targetVal, currency, result.fx)}</td>
+    <td class="wide-col num ${tradeCls}">${convertCHF(r.trade, currency, result.fx)}</td>
     <td>${allocOrderCell(r.orderHint, r.trade>0?'buy':'sell')}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
   return `
     <p class="section-label">Empfohlene Trades — Transfer ins Schema</p>
     <div class="table-scroll">
       <table class="alloc-hybrid-tbl alloc-trades-tbl">
         <thead><tr>
           <th style="text-align:left">Position</th>
+          <th class="wide-col">Jetzt</th>
+          <th class="wide-col">Ziel</th>
+          <th class="wide-col">Trade</th>
           <th>Order</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -557,6 +645,42 @@ function renderAddCashHtml(result){
   `;
 }
 
+function renderWithdrawalHtml(result){
+  _lastWithdrawalResult = result;
+  if(!result || !result.rows.length) return '';
+  // The trailing CASH row is a receipt line (the withdrawn total), not a sell
+  // recommendation -- rendered plain, without the trade-row class/data-idx,
+  // so it isn't clickable into a detail sheet like the real sell rows above it.
+  const rows = result.rows.map((r,i) => {
+    const isCash = r.ticker === 'CASH';
+    if(isCash){
+      return `<tr>
+      <td style="text-align:left">${esc(r.name)}</td>
+      <td class="num">${convertCHF(r.amount, getCurrency(), result.fx)}</td>
+    </tr>`;
+    }
+    return `<tr class="alloc-trade-row" data-kind="withdrawal" data-idx="${i}">
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td>${allocOrderCell(r.orderHint, 'sell')}</td>
+  </tr>`;
+  }).join('');
+  return `
+    <p class="section-label">Empfohlene Verkäufe — Entnahme</p>
+    <div class="table-scroll">
+      <table class="alloc-hybrid-tbl alloc-trades-tbl">
+        <thead><tr>
+          <th style="text-align:left">Position</th>
+          <th>Order</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="hint alloc-hint">Entnahme von ${convertCHF(result.cash, getCurrency(), result.fx)}: verkauft anteilig aus dem
+      Überschuss jeder Position über ihrem Zielgewicht (nach der Entnahme berechnet) — Zielgewichte bleiben so
+      weit wie möglich erhalten. Trades &lt;0.5% der Entnahme oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
+  `;
+}
+
 // ---------- trade detail popup (copyable ISIN / order level) ----------
 let _copyBtnSeq = 0;
 function copyBtnHtml(text){
@@ -590,7 +714,8 @@ function openTradeSheet(row, ctx){
   const meta = row.meta || {};
   const oh = row.orderHint;
   const isAddCash = ctx.kind === 'addcash';
-  const dir = isAddCash ? 'buy' : (row.trade > 0 ? 'buy' : (row.trade < 0 ? 'sell' : null));
+  const isWithdrawal = ctx.kind === 'withdrawal';
+  const dir = isAddCash ? 'buy' : isWithdrawal ? 'sell' : (row.trade > 0 ? 'buy' : (row.trade < 0 ? 'sell' : null));
   const ohCls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
 
   const isinTile = isIsin(row.ticker) ? `<div class="rs-metric"><span class="rs-metric-label">ISIN</span>
@@ -606,15 +731,15 @@ function openTradeSheet(row, ctx){
   const mlTile = meta.ml_signal ? `<div class="rs-metric"><span class="rs-metric-label">ML</span>
     <span class="rs-metric-value">${esc(meta.ml_signal)}</span></div>` : '';
 
-  const jetztZielHtml = isAddCash ? '' : `
+  const jetztZielHtml = (isAddCash || isWithdrawal) ? '' : `
     <div class="rs-metric"><span class="rs-metric-label">Jetzt</span><span class="rs-metric-value">${convertCHF(row.curVal, currency, ctx.fx)}</span></div>
     <div class="rs-metric"><span class="rs-metric-label">Ziel</span><span class="rs-metric-value">${convertCHF(row.targetVal, currency, ctx.fx)}</span></div>`;
 
-  const amountLabel = isAddCash ? 'Neu investieren' : 'Trade';
-  const amountVal = isAddCash ? row.amount : row.trade;
-  const amountCls = amountVal>0 ? 'pos' : (amountVal<0 ? 'neg' : '');
-  const amountStr = isAddCash
-    ? convertCHF(row.amount, currency, ctx.fx)
+  const amountLabel = isAddCash ? 'Neu investieren' : isWithdrawal ? 'Verkauf' : 'Trade';
+  const amountVal = (isAddCash || isWithdrawal) ? row.amount : row.trade;
+  const amountCls = isWithdrawal ? 'neg' : (amountVal>0 ? 'pos' : (amountVal<0 ? 'neg' : ''));
+  const amountStr = isAddCash ? convertCHF(row.amount, currency, ctx.fx)
+    : isWithdrawal ? 'Verkaufen ' + convertCHF(row.amount, currency, ctx.fx)
     : (amountVal>0 ? 'Kaufen ' : 'Verkaufen ') + convertCHF(Math.abs(amountVal), currency, ctx.fx);
 
   const orderPriceStr = (oh && oh.price!=null) ? oh.price.toFixed(2) : null;
@@ -650,9 +775,11 @@ function openTradeSheet(row, ctx){
   wireCopyButtons(sheet);
 }
 
-// Delegated click on both trade tables — looks up the row by index from the
-// last-rendered result rather than round-tripping data through HTML attributes.
-document.addEventListener('click', (e)=>{
+// Delegated click/dblclick on both trade tables — looks up the row by index
+// from the last-rendered result rather than round-tripping data through HTML
+// attributes. dblclick mirrors click (desktop-mouse affordance parity with
+// the row-sheet-hint pattern elsewhere) rather than being a distinct action.
+function openTradeRowSheet(e){
   const tr = e.target.closest('.alloc-trade-row');
   if(!tr) return;
   const idx = Number(tr.dataset.idx);
@@ -660,8 +787,12 @@ document.addEventListener('click', (e)=>{
     openTradeSheet(_lastTradesResult.rows[idx], {fx: _lastTradesResult.fx, kind: 'trade'});
   } else if(tr.dataset.kind === 'addcash' && _lastAddCashResult){
     openTradeSheet(_lastAddCashResult.rows[idx], {fx: _lastAddCashResult.fx, kind: 'addcash'});
+  } else if(tr.dataset.kind === 'withdrawal' && _lastWithdrawalResult){
+    openTradeSheet(_lastWithdrawalResult.rows[idx], {fx: _lastWithdrawalResult.fx, kind: 'withdrawal'});
   }
-});
+}
+document.addEventListener('click', openTradeRowSheet);
+document.addEventListener('dblclick', openTradeRowSheet);
 
 const TABLE_VARIANT_KEY = 'pwa.stocks.tableVariant';
 function getTableVariant(){
@@ -1330,6 +1461,23 @@ function explainFor(label){
   return fromReport || EXPLAIN[label] || '';
 }
 
+// Shared "explain this" popup -- same look/dismiss behaviour used by the
+// row-sheet's .rs-metric dblclick handler and (below) table column headers,
+// which have no hover on touch so title= alone is unreachable there.
+function showExplainPopup(anchorEl, text){
+  if(!text) return;
+  document.getElementById('rs-explain-popup')?.remove();
+  const popup=document.createElement('div');
+  popup.id='rs-explain-popup'; popup.className='rs-explain-popup';
+  popup.textContent=text;
+  const rect=anchorEl.getBoundingClientRect();
+  popup.style.top=(rect.bottom+4)+'px';
+  popup.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-244))+'px';
+  document.body.appendChild(popup);
+  const dismiss=ev=>{ if(!popup.contains(ev.target)){popup.remove();document.removeEventListener('click',dismiss,true);} };
+  setTimeout(()=>document.addEventListener('click',dismiss,true),0);
+}
+
 function renderHead(cols){
   cols=cols||COLS;
   const tr=document.createElement('tr');
@@ -1338,8 +1486,11 @@ function renderHead(cols){
     const key = c[0];
     th.textContent = key + (sortKey===key? (sortDir>0?' ▲':' ▼'):'');
     const desc = explainFor(key);
-    if (desc) th.title = desc;   // desktop hover help; mobile uses the row sheet
+    if (desc) th.title = desc;   // desktop hover help
     th.onclick=()=>{ if(sortKey===key) sortDir=-sortDir; else {sortKey=key; sortDir=1;} if(DATA) renderOverview(); };
+    // Touch has no hover: doppeltippen reuses the row-sheet's explain-popup
+    // pattern instead (single tap keeps sorting, unchanged).
+    if (desc) th.ondblclick=(e)=>{ e.stopPropagation(); showExplainPopup(th, desc); };
     tr.appendChild(th);
   });
   const th=$('#tbl thead'); th.innerHTML=''; th.appendChild(tr);
@@ -1428,7 +1579,18 @@ function openRowSheet(ticker){
       `<div class="rs-metric"><span class="rs-metric-label">Cons.</span><span class="rs-metric-value">${consHtml}</span></div>`:'',
   ].join('');
   const skipCols=new Set(['Ticker','Name','Cons.','Order']); // Order has its own dedicated section below (with rationale)
-  const metricsHtml=COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
+  // ISIN/proxy: Input/Portfolio.csv metadata columns, passed through onto
+  // holding.isin/holding.proxy by main.py/scanner/report.py -- absent for
+  // non-holdings (Watchlist/research rows have no holding at all). Unset
+  // columns round-trip through pandas/JSON as the literal string "nan"
+  // (existing backend quirk, not a PWA bug) -- isIsin() rejects that for
+  // isin; proxy has no format check, so it needs an explicit nan guard.
+  const holdingProxy = r.holding && r.holding.proxy;
+  const isinTile = (r.holding && isIsin(r.holding.isin)) ? `<div class="rs-metric"><span class="rs-metric-label">ISIN</span>
+    <span class="rs-metric-value">${esc(r.holding.isin)} ${copyBtnHtml(r.holding.isin)}</span></div>` : '';
+  const proxyTile = (holdingProxy && String(holdingProxy).toLowerCase()!=='nan') ? `<div class="rs-metric"><span class="rs-metric-label">Kurs via</span>
+    <span class="rs-metric-value">${esc(holdingProxy)}</span></div>` : '';
+  const metricsHtml=isinTile+proxyTile+COLS.filter(c=>!skipCols.has(c[0])&&!(c[4]&&c[4].panelCol))
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('');
   // Backtest metrics: shown regardless of the active table preset (a quick
@@ -1473,6 +1635,7 @@ function openRowSheet(ticker){
     <button class="btn btn-primary row-sheet-chart-btn">&rarr; Chart</button>
   </div>`;
   document.body.appendChild(backdrop); document.body.appendChild(sheet);
+  wireCopyButtons(sheet);
   const close=()=>{backdrop.remove();sheet.remove();};
   backdrop.addEventListener('click',close);
   sheet.querySelector('.row-sheet-chart-btn').addEventListener('click',()=>{
@@ -1482,17 +1645,7 @@ function openRowSheet(ticker){
     tile.addEventListener('dblclick',e=>{
       e.stopPropagation();
       const key=(tile.querySelector('.rs-metric-label')||{}).textContent||'';
-      const text=explainFor(key); if(!text) return;
-      document.getElementById('rs-explain-popup')?.remove();
-      const popup=document.createElement('div');
-      popup.id='rs-explain-popup'; popup.className='rs-explain-popup';
-      popup.textContent=text;
-      const rect=tile.getBoundingClientRect();
-      popup.style.top=(rect.bottom+4)+'px';
-      popup.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-244))+'px';
-      document.body.appendChild(popup);
-      const dismiss=ev=>{ if(!popup.contains(ev.target)){popup.remove();document.removeEventListener('click',dismiss,true);} };
-      setTimeout(()=>document.addEventListener('click',dismiss,true),0);
+      showExplainPopup(tile, explainFor(key));
     });
   });
 }
@@ -1525,8 +1678,29 @@ function renderCompact(){
   renderBody(presetCols,r=>openRowSheet(r.ticker));
 }
 
+// Root-caused 2026-07-11: "auto doesn't switch to compact on a phone" reports
+// were never a bug in isPortrait()/renderCompact() (verified working whenever
+// getTableVariant()==='auto') -- they're an explicit 'classic' choice made on
+// a previous (desktop) session, persisted via localStorage, silently
+// outranking auto-detection with no visible explanation. Surface that instead
+// of trying to override a deliberate user choice.
+function renderVariantMismatchHint(v){
+  const el = $('#variant-mismatch-hint');
+  if(!el) return;
+  if(v!=='classic' || !isPortrait()){ el.style.display='none'; return; }
+  el.style.display='';
+  el.innerHTML = 'Klassische Ansicht ist manuell festgelegt (Info → Darstellung) und bleibt auf diesem Gerät aktiv. <a href="#" id="variant-switch-compact">Zu Kompakt wechseln</a>';
+  el.querySelector('#variant-switch-compact').onclick = e=>{
+    e.preventDefault();
+    try{ localStorage.setItem(TABLE_VARIANT_KEY, 'auto'); }catch{}
+    const sel = $('#table-variant-sel'); if(sel) sel.value = 'auto';
+    window.dispatchEvent(new CustomEvent('pwa:table-variant'));
+  };
+}
+
 function renderOverview(){
   const v=getTableVariant();
+  renderVariantMismatchHint(v);
   if(v==='auto') isPortrait()?renderCompact():renderClassic();
   else if(v==='compact') renderCompact();
   else renderClassic();
@@ -1619,14 +1793,18 @@ export function renderAllocation(){
   if(metaEl){
     metaEl.style.display='';
     // a.label is scheme5's own top-level label -- hybrid/techheavy carry their
-    // own label on their block instead, so the header must pick the one
-    // matching the currently selected scheme, not always the top-level one.
-    const schemeLabel = scheme==='hybrid' ? (a.hybrid && a.hybrid.label)
-      : scheme==='techheavy' ? (a.techheavy && a.techheavy.label)
-      : a.label;
+    // own label (+ research flag) on their block instead, so the header must
+    // pick the one matching the currently selected scheme, not always the
+    // top-level one. Any positions-shaped block (hybrid/techheavy/cashout/…)
+    // carries its own label the same way; scheme5 is the one exception (its
+    // label lives at the top level, since it predates this convention).
+    const schemeBlock = (a[scheme] && Array.isArray(a[scheme].positions)) ? a[scheme] : a;
+    const schemeLabel = schemeBlock && schemeBlock.label;
+    const researchBadge = (schemeBlock && schemeBlock.research)
+      ? ' <span class="alloc-research-badge">Research</span>' : '';
     const activeBadge = getActiveScheme()===scheme
       ? ' <span class="badge-active" style="color:#4ade80;font-weight:600;">● AKTIV</span>' : '';
-    metaEl.innerHTML = `<b>${esc(schemeLabel||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${activeBadge}`;
+    metaEl.innerHTML = `<b>${esc(schemeLabel||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${researchBadge}${activeBadge}`;
   }
 
   const activateBtn = $('#alloc-activate-btn');
@@ -1639,7 +1817,7 @@ export function renderAllocation(){
   }
 
   if(hybridEl){
-    const block = scheme==='hybrid' ? a.hybrid : (scheme==='techheavy' ? a.techheavy : null);
+    const block = (a[scheme] && Array.isArray(a[scheme].positions)) ? a[scheme] : null;
     if(block){
       hybridEl.style.display='';
       hybridEl.innerHTML = renderHybridHtml(block);
@@ -1731,8 +1909,11 @@ function renderAddCash(){
   const raw = input.value.trim();
   if(!raw){ out.innerHTML=''; return; }
   const typed = Number(raw);
-  if(!isNum(typed) || typed <= 0){ out.innerHTML=''; return; }
+  if(!isNum(typed) || typed === 0){ out.innerHTML=''; return; }
   const scheme = (schemeSel && schemeSel.value) || 'hybrid';
+  // Negative amount = withdrawal (computeWithdrawal), positive = add-cash
+  // (computeAddCash) -- same input, same debounced trigger, opposite flow.
+  const isWithdrawal = typed < 0;
 
   out.innerHTML = '<p class="hint">Wird berechnet…</p>';
   Promise.all([ensurePortfolioHoldings(), ensurePortfolioExclude()]).then(()=>{
@@ -1740,9 +1921,11 @@ function renderAddCash(){
     // the input, switched scheme, or navigated away from the sub-tab.
     if(!$('#alloc-addcash-out') || ($('#alloc-scheme-sel')||{}).value !== scheme) return;
     const fx = portfolioHoldingsData && portfolioHoldingsData.fx;
-    const cashChf = toCHF(typed, getCurrency(), fx);
+    const cashChf = toCHF(Math.abs(typed), getCurrency(), fx);
     if(!isNum(cashChf) || cashChf <= 0){ out.innerHTML=''; return; }
-    out.innerHTML = renderAddCashHtml(computeAddCash(scheme, cashChf));
+    out.innerHTML = isWithdrawal
+      ? renderWithdrawalHtml(computeWithdrawal(scheme, cashChf))
+      : renderAddCashHtml(computeAddCash(scheme, cashChf));
   });
 }
 

@@ -46,11 +46,12 @@
     </div>
 
     <div id="alloc-panel" style="display:none">
-      <div class="alloc-scheme-row" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <div class="alloc-scheme-row">
         <select id="alloc-scheme-sel" title="Schema wählen" style="display:none">
           <option value="hybrid">Hybrid 55/15/15/15 (real-money)</option>
           <option value="scheme5">#5 Sharpshooter (Research)</option>
           <option value="techheavy">Tech Heavy (Research, T1)</option>
+          <option value="cashout">Cash-Out 24m</option>
         </select>
         <button id="alloc-activate-btn" type="button" class="info-btn" style="display:none;flex:none;min-width:0;padding:8px 14px;">Aktivieren</button>
       </div>
@@ -60,12 +61,12 @@
         <table id="alloc-tbl" style="display:none"><thead></thead><tbody></tbody></table>
       </div>
       <div id="alloc-foot" style="display:none"></div>
+      <div id="alloc-trades" style="display:none"></div>
       <div id="alloc-addcash-panel" class="alloc-addcash-panel" style="display:none">
-        <label for="alloc-addcash" class="section-label">Neue Einzahlung</label>
-        <input id="alloc-addcash" type="number" min="0" step="1" inputmode="decimal" placeholder="Betrag…">
+        <label for="alloc-addcash" class="section-label">Neue Einzahlung / Entnahme (− Betrag)</label>
+        <input id="alloc-addcash" type="number" step="1" inputmode="decimal" placeholder="Betrag…">
         <div id="alloc-addcash-out"></div>
       </div>
-      <div id="alloc-trades" style="display:none"></div>
     </div>
 
     <div id="perf-wrap" style="display:none">
@@ -96,6 +97,7 @@
       <div id="status-line" class="status-line" style="display:none"></div>
     </div>
     <div id="view-error" class="view-error" style="display:none"></div>
+    <div id="variant-mismatch-hint" class="hint" style="display:none;margin-bottom:8px"></div>
     <div class="table-scroll">
       <table id="tbl" style="display:none"><thead></thead><tbody></tbody></table>
     </div>

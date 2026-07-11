@@ -32,12 +32,27 @@ let lastOnline  = null; // tracks offline→online transitions for auto-reload
 let lastRunning = null; // tracks scan running→done transitions for digest refresh
 
 // ── Status / offline UI ─────────────────────────────────────────────────────
+// Showing the offline banner is debounced (delayed) so a transient false
+// reading before the first health probe settles doesn't flash it at boot;
+// hiding it stays instant once the server answers.
+let offlineBannerTimer = null;
 function setStatusDot(online) {
   const dot = $('#status-dot');
   dot?.classList.toggle('online', online);
   dot?.classList.toggle('offline', !online);
   // Only nag about being offline once the user has a token (i.e. expects data).
-  $('#offline')?.classList.toggle('visible', hasToken() && !online);
+  const shouldShow = hasToken() && !online;
+  if (shouldShow) {
+    if (!offlineBannerTimer) {
+      offlineBannerTimer = setTimeout(() => {
+        offlineBannerTimer = null;
+        $('#offline')?.classList.add('visible');
+      }, 1500);
+    }
+  } else {
+    if (offlineBannerTimer) { clearTimeout(offlineBannerTimer); offlineBannerTimer = null; }
+    $('#offline')?.classList.remove('visible');
+  }
   window.dispatchEvent(new CustomEvent('pwa:server', { detail: online }));
 }
 
