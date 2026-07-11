@@ -29,8 +29,9 @@ button) and **Allokation** (portfolio-wide, not tied to any report/list):
   (`Input/Portfolio.csv` total value) into the selected scheme's target weights. Holdings outside
   the scheme are full sells; scheme instruments not yet held are full buys from cash. Uses each
   position's *live* conviction-scaled target (not the static long-run weight). Positions listed in
-  `Input/Portfolio_exclude.csv` (same schema as `Portfolio.csv` — e.g. an ESAP plan handled
-  manually) are excluded entirely from the pool and never recommended for sale.
+  `Input/Portfolio_exclude.csv` (a subset of `Portfolio.csv`'s columns — ticker/name/exposure/
+  currency/as of, no proxy/isin — e.g. an ESAP plan handled manually) are excluded entirely from
+  the pool and never recommended for sale.
 - Buy/sell trade cells use the same green/red convention as the Order column (below).
 
 ## Tab: Übersicht (Overview)

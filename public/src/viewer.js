@@ -83,6 +83,11 @@ function setPreset(v){ try{ localStorage.setItem(TABLE_PRESET_KEY,v); }catch{} }
 let allocationData = null;     // cached JSON once fetched successfully
 let allocationTried = false;   // fetch attempted (success or failure)
 
+// Allokation-view domain constants (trade-recommendation thresholds), shared
+// by computeSchemeTrades and computeAddCash below.
+const DUST_PCT = 0.5;        // hide trades below 0.5% of total (rounding noise, not actionable)
+const MIN_ORDER_CHF = 1000;  // no recommendation is worth transacting below this
+
 /** Re-attempt the allocation fetch after a scan completes, if it previously
  *  failed (e.g. allocation_scheme5.json didn't exist yet on first app open) —
  *  otherwise the Allokation sub-tab would stay empty until an app restart. */
@@ -90,6 +95,26 @@ function retryAllocationIfMissing(){
   if(!allocationData){
     allocationTried = false;
     ensureAllocation();
+  }
+}
+
+// The <option value> keys in index.html's scheme dropdown are stable, but
+// their hard-coded TEXT drifts whenever a producer's --*-fund weights change
+// its label (same sickness the alloc-meta header above already guards
+// against via schemeLabel). Rewrite each option's text from the same JSON
+// once it resolves; the hard-coded text stays as the fallback for the
+// not-yet-loaded state.
+function updateSchemeDropdownLabels(a){
+  const sel = $('#alloc-scheme-sel');
+  if(!sel || !a) return;
+  const labelsByValue = {
+    hybrid:    a.hybrid && a.hybrid.label,
+    scheme5:   a.label,
+    techheavy: a.techheavy && a.techheavy.label,
+  };
+  for(const opt of sel.options){
+    const label = labelsByValue[opt.value];
+    if(label) opt.textContent = label;
   }
 }
 
@@ -102,6 +127,7 @@ export async function ensureAllocation(){
   try{
     const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
     allocationData = await apiJson(url);
+    updateSchemeDropdownLabels(allocationData);
   }catch(err){
     allocationData = null;
     console.warn('allocation fetch failed:', err.message);
@@ -156,14 +182,21 @@ async function ensurePortfolioHoldings(){
   return portfolioHoldingsData;
 }
 
-// Scheme-side ticker -> the ticker actually used in Input/Portfolio.csv, for
-// identity aliases only (same instrument, different code spelling). Proxy
-// relationships (scheme wants QQQ, Portfolio.csv actually holds XNAS.SW as
-// its declared substitute) are NOT identity and are resolved dynamically
-// below from each holding's own 'proxy' column instead of hard-coded here.
-const PORTFOLIO_TICKER_ALIAS = {
-  'CH0032831981': 'AVADIS',  // Avadis fund: hybrid scheme uses the ISIN, Portfolio.csv a plain alias
-};
+// Scheme-side identity ticker (e.g. an ISIN like 'CH0032831981') -> the
+// ticker actually used in Input/Portfolio.csv, read live from each holding's
+// 'isin' column (input/Portfolio.csv) via the report JSON's holding.isin
+// field (main.py/scanner/report.py). Rebuilt from the latest
+// portfolioHoldingsData on every call, same pattern as buildProxyAliasMap
+// below, so it always reflects the current CSV, never a stale hard-coded map.
+function buildIsinAliasMap(){
+  const map = {};
+  const tickers = (portfolioHoldingsData && portfolioHoldingsData.tickers) || [];
+  for(const t of tickers){
+    const isin = t.holding && t.holding.isin;
+    if(isin && String(isin).trim()) map[String(isin).trim()] = t.ticker;
+  }
+  return map;
+}
 
 // proxy ticker (e.g. QQQ, the scheme's Nasdaq-100 leg) -> the ticker
 // Portfolio.csv actually holds for it (e.g. XNAS.SW), read live from each
@@ -184,8 +217,8 @@ function buildProxyAliasMap(){
 // viaProxy tells the caller the match is a *different* instrument standing in
 // for the scheme leg (different price series) -- as opposed to an identity
 // alias or a direct match, where the scheme leg's own levels are correct.
-function resolveAliasedTicker(t, proxyMap){
-  if(PORTFOLIO_TICKER_ALIAS[t]) return {ticker: PORTFOLIO_TICKER_ALIAS[t], viaProxy: false};
+function resolveAliasedTicker(t, proxyMap, isinMap){
+  if(isinMap[t]) return {ticker: isinMap[t], viaProxy: false};
   if(proxyMap[t]) return {ticker: proxyMap[t], viaProxy: true};
   return {ticker: t, viaProxy: false};
 }
@@ -224,10 +257,11 @@ function buildSchemeTargets(schemeKey){
   const a = allocationData;
   if(!a) return null;
   const proxyMap = buildProxyAliasMap();
+  const isinMap = buildIsinAliasMap();
   const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy}}
   const add = (originalTk, name, pct, meta) => {
     if(!pct) return;
-    const {ticker: tk, viaProxy} = resolveAliasedTicker(originalTk, proxyMap);
+    const {ticker: tk, viaProxy} = resolveAliasedTicker(originalTk, proxyMap, isinMap);
     // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
     // one -- resolveAliasedTicker() maps it to whatever ticker Portfolio.csv holds
     // it under for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
@@ -275,41 +309,30 @@ function buildSchemeTargets(schemeKey){
 const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 const isIsin = (tk) => ISIN_RE.test(tk||'');
 
-// Mirrors functions/order_hint.py exactly (same support/resistance column sets,
-// same breakout/pullback thresholds) but *direction* is the caller's rebalance
-// TRADE direction (buy if underweight, sell if overweight) -- which can differ
-// from the instrument's own ml_signal (e.g. the scheme still wants more of a
-// position that ML currently reads as Hold/Sell).
-function orderHintJS(levels, direction){
-  if(!levels || !isNum(levels.close)){
+// German rationale text for each backend reason code (functions/order_hint.py
+// order_hints_both(), embedded per held ticker as report.order_hints by
+// main.py/scanner/report.py). Replaces the old orderHintJS() mirror -- the
+// backend now computes both trade directions itself; this only localizes the
+// stable reason code into the UI's German text.
+const ORDER_HINT_REASON_DE = {
+  breakout_upper:     () => 'Market — Ausbruch über oberes Band',
+  pullback_support:   price => `Limit @ ${price.toFixed(2)} — Rücksetzer-Kauf`,
+  no_support:         () => 'Market — kein Support unter Kurs',
+  breakdown_lower:    () => 'Market — Ausbruch unter unteres Band',
+  sell_into_strength: price => `Limit @ ${price.toFixed(2)} — Verkauf in Stärke`,
+  no_resistance:      () => 'Market — kein Widerstand über Kurs',
+};
+
+// hint is report.order_hints[direction] ({type, price, reason}) for a held
+// ticker, or null when no order_hints are available (a stale pre-upgrade
+// report, or a scheme leg with no matching Portfolio.csv holding) -- shown as
+// a placeholder rather than recomputed from scheme-side data.
+function localizeOrderHint(hint, direction){
+  if(!hint) {
     return {type:'market', price:null,
       rationale: direction==='buy' ? 'Market — neue Position, keine Kursdaten' : 'Market — keine Kursdaten'};
   }
-  const close = levels.close;
-  const rsi = isNum(levels.rsi) ? levels.rsi : null;
-  const supportCols = ['ma50','lower','fib_236','fib_382','fib_5','fib_618','fib_764'];
-  const resistCols  = ['ma50','upper','fib_236','fib_382','fib_5','fib_618','fib_764'];
-  const supports = supportCols.map(k=>levels[k]).filter(v=>isNum(v) && v<close);
-  const resistances = resistCols.map(k=>levels[k]).filter(v=>isNum(v) && v>close);
-
-  if(direction === 'buy'){
-    if(isNum(levels.upper) && close>=levels.upper && (rsi===null || rsi>=65)){
-      return {type:'market', price:close, rationale:'Market — Ausbruch über oberes Band'};
-    }
-    if(supports.length){
-      const level = Math.max(...supports);
-      return {type:'limit', price:level, rationale:`Limit @ ${level.toFixed(2)} — Rücksetzer-Kauf`};
-    }
-    return {type:'market', price:close, rationale:'Market — kein Support unter Kurs'};
-  }
-  if(isNum(levels.lower) && close<=levels.lower && (rsi===null || rsi<=35)){
-    return {type:'market', price:close, rationale:'Market — Ausbruch unter unteres Band'};
-  }
-  if(resistances.length){
-    const level = Math.min(...resistances);
-    return {type:'limit', price:level, rationale:`Limit @ ${level.toFixed(2)} — Verkauf in Stärke`};
-  }
-  return {type:'market', price:close, rationale:'Market — kein Widerstand über Kurs'};
+  return {type: hint.type, price: hint.price, rationale: ORDER_HINT_REASON_DE[hint.reason](hint.price)};
 }
 
 // Recommended trades to move the WHOLE current portfolio (Input/Portfolio.csv,
@@ -330,22 +353,20 @@ function computeSchemeTrades(schemeKey){
   for(const t of holdings.tickers){
     const v = (t.holding && isNum(t.holding.value_chf)) ? t.holding.value_chf : 0;
     if(exclude.has(t.ticker)){ if(v > 0) excludedHeld.push(t.ticker); continue; }
-    // The Portfolio report already computes real levels/ml_risk for every held
-    // ticker (main.py/scanner/report.py's per-row order_hint pipeline) -- reuse
+    // The Portfolio report already computes real levels/ml_risk/order_hints for
+    // every held ticker (main.py/scanner/report.py's per-row pipeline) -- reuse
     // them for holdings outside the scheme too, instead of a blind "no data"
     // fallback. These are real, currently-held instruments; a full-sell
     // recommendation on one deserves the same real Market/Limit price a scheme
     // instrument gets, not a placeholder.
     if(v > 0){
       const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
-      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal});
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
       total += v;
     }
   }
   if(total <= 0) return null;
 
-  const DUST_PCT = 0.5; // hide trades below 0.5% of total (rounding noise, not actionable)
-  const MIN_ORDER_CHF = 1000; // no recommendation is worth transacting below this
   const passes = (absTrade) => absTrade / total * 100 >= DUST_PCT && absTrade >= MIN_ORDER_CHF;
   const rows = [];
   const seen = new Set();
@@ -359,24 +380,25 @@ function computeSchemeTrades(schemeKey){
     // declared proxy) MUST price off the actually-held instrument -- QQQ and
     // XNAS.SW track closely but are different tickers on different price
     // scales, so the scheme's own QQQ levels would produce a nonsense limit
-    // price for an XNAS.SW order. Otherwise prefer the scheme's own levels
-    // (already conviction/twin-aware); fall back to the held ticker's
-    // report-sourced levels if the scheme has none for it.
+    // price for an XNAS.SW order. The backend's order_hints are always keyed
+    // by the actually-held ticker (this report row), so this falls out for
+    // free -- no separate viaProxy branch needed for pricing, only for the
+    // displayed meta (ml_signal/levels shown in the row detail sheet).
     const viaProxy = meta && meta.viaProxy && held && held.levels;
-    const levels = viaProxy ? held.levels : ((meta && meta.levels) || (held && held.levels) || null);
     const rowMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
+      const hint = held && held.orderHints ? held.orderHints[dir] : null;
       rows.push({ticker: tk, name: (held||{}).name || name, targetVal, curVal, trade,
-        meta: rowMeta, orderHint: orderHintJS(levels, dir)});
+        meta: rowMeta, orderHint: localizeOrderHint(hint, dir)});
     }
   }
   const cashTarget = total * built.cashPct / 100;
   if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null});
-  for(const [tk, {value, name, levels, ml_signal}] of byTicker){
+  for(const [tk, {value, name, levels, ml_signal, orderHints}] of byTicker){
     if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
-      meta: {levels, ml_signal, twin: null}, orderHint: orderHintJS(levels, 'sell')});
+      meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell')});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
   return {total, rows, fx: holdings.fx, excludedHeld};
@@ -415,18 +437,19 @@ function computeAddCash(schemeKey, cashChf){
     if(exclude.has(t.ticker)) continue;
     if(v > 0){
       const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
-      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal});
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
       currentTotal += v;
     }
   }
 
   const newTotal = currentTotal + cashChf;
-  const DUST_PCT = 0.5; // same threshold as computeSchemeTrades
 
   // Build every target leg (incl. the cash/Geldmarkt leg) with its shortfall.
   // Prefer the scheme's own levels; fall back to a held ticker's report-sourced
   // levels if the scheme has none for it (same rationale as computeSchemeTrades,
-  // including the proxy-match override -- see there for why).
+  // including the proxy-match override -- see there for why). order_hints are
+  // always keyed by the actually-held ticker, so no proxy branch is needed for
+  // pricing (see computeSchemeTrades).
   const legs = [];
   for(const [tk, {name, pct, meta}] of built.targets){
     const targetVal = newTotal * pct / 100;
@@ -436,10 +459,12 @@ function computeAddCash(schemeKey, cashChf){
     const legMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
+      orderHints: (held||{}).orderHints || null,
       shortfall: Math.max(0, targetVal - curVal)});
   }
   if(built.cashPct > 0){
     legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, meta: null,
+      orderHints: null,
       shortfall: Math.max(0, newTotal * built.cashPct / 100)});
   }
 
@@ -449,20 +474,19 @@ function computeAddCash(schemeKey, cashChf){
     // No shortfalls at all (portfolio already at/above every target) — spread
     // the whole amount pro-rata by weight since there's nothing to "catch up".
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints}));
   } else if(sumShortfall <= cashChf){
     const leftover = cashChf - sumShortfall;
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints}));
   } else {
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall, meta: l.meta}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall, meta: l.meta, orderHints: l.orderHints}));
   }
 
-  const MIN_ORDER_CHF = 1000; // same floor as computeSchemeTrades
   rows = rows.filter(r => r.amount / cashChf * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
   rows.sort((x,y) => y.amount - x.amount);
   // Additive-only: every row is a buy by construction.
-  rows.forEach(r => { r.orderHint = orderHintJS(r.meta && r.meta.levels, 'buy'); });
+  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.buy : null, 'buy'); });
   return {cash: cashChf, rows, fx: holdings.fx};
 }
 
