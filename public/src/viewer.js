@@ -89,7 +89,7 @@ const DUST_PCT = 0.5;        // hide trades below 0.5% of total (rounding noise,
 const MIN_ORDER_CHF = 1000;  // no recommendation is worth transacting below this
 
 /** Re-attempt the allocation fetch after a scan completes, if it previously
- *  failed (e.g. allocation_scheme5.json didn't exist yet on first app open) —
+ *  failed (e.g. allocation.json didn't exist yet on first app open) —
  *  otherwise the Allokation sub-tab would stay empty until an app restart. */
 function retryAllocationIfMissing(){
   if(!allocationData){
@@ -107,11 +107,12 @@ function retryAllocationIfMissing(){
 function updateSchemeDropdownLabels(a){
   const sel = $('#alloc-scheme-sel');
   if(!sel || !a) return;
+  const schemes = a.schemes || {};
   const labelsByValue = {
-    hybrid:    a.hybrid && (a.hybrid.short_label || a.hybrid.label),
-    scheme5:   a.short_label || a.label,
-    techheavy: a.techheavy && (a.techheavy.short_label || a.techheavy.label),
-    cashout:   a.cashout && (a.cashout.short_label || a.cashout.label),
+    hybrid:    schemes.hybrid && (schemes.hybrid.short_label || schemes.hybrid.label),
+    scheme5:   schemes.scheme5 && (schemes.scheme5.short_label || schemes.scheme5.label),
+    techheavy: schemes.techheavy && (schemes.techheavy.short_label || schemes.techheavy.label),
+    cashout:   schemes.cashout && (schemes.cashout.short_label || schemes.cashout.label),
   };
   for(const opt of sel.options){
     const label = labelsByValue[opt.value];
@@ -119,7 +120,30 @@ function updateSchemeDropdownLabels(a){
   }
 }
 
-/** Fetch Output/allocation_scheme5.json via the server; cache in a module var.
+// Normalizes a legacy pre-`schemes`-wrapper payload (scheme5's fields at the
+// payload root, hybrid/techheavy/cashout nested beside them -- the producer's
+// shape before its 2026-07-16 reshape) into the current uniform
+// {asof, currency, schemes:{scheme5, hybrid, techheavy, cashout}} shape, so a
+// stale backend (old alloc_scheme5_live.py / allocation_scheme5.json) still
+// renders. Everything downstream reads only the new shape.
+function normalizeAllocationPayload(a){
+  if(!a || a.schemes) return a;
+  return {
+    asof: a.asof,
+    currency: a.currency,
+    schemes: {
+      scheme5: {
+        label: a.label, short_label: a.short_label, research: a.research,
+        metrics: a.scheme5_metrics, sleeves: a.sleeves,
+        in_1x_twins_pct: a.in_1x_twins_pct, cash_money_market_pct: a.cash_money_market_pct,
+        derisk_rule: a.derisk_rule, cash_destination: a.cash_destination, caveats: a.caveats,
+      },
+      hybrid: a.hybrid, techheavy: a.techheavy, cashout: a.cashout,
+    },
+  };
+}
+
+/** Fetch Output/allocation.json via the server; cache in a module var.
  *  Failure is silent (console.warn only) — renderAllocation() shows its own
  *  empty state. Re-renders immediately if the Allokation sub-tab is open. */
 export async function ensureAllocation(){
@@ -127,7 +151,7 @@ export async function ensureAllocation(){
   allocationTried = true;
   try{
     const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
-    allocationData = await apiJson(url);
+    allocationData = normalizeAllocationPayload(await apiJson(url));
     updateSchemeDropdownLabels(allocationData);
   }catch(err){
     allocationData = null;
@@ -257,6 +281,8 @@ async function ensurePortfolioExclude(){
 function buildSchemeTargets(schemeKey){
   const a = allocationData;
   if(!a) return null;
+  const block = a.schemes && a.schemes[schemeKey];
+  if(!block) return null;
   const proxyMap = buildProxyAliasMap();
   const isinMap = buildIsinAliasMap();
   const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy}}
@@ -279,19 +305,18 @@ function buildSchemeTargets(schemeKey){
   // Any "positions"-shaped block (hybrid/techheavy/cashout/…) shares this
   // branch -- adding a new scheme to the producer's JSON needs no new PWA
   // branch here as long as it follows the same shape.
-  const positionsBlock = (a[schemeKey] && Array.isArray(a[schemeKey].positions)) ? a[schemeKey] : null;
+  const positionsBlock = Array.isArray(block.positions) ? block : null;
   if(positionsBlock){
-    const block = positionsBlock;
-    for(const p of (block.positions||[])){
+    for(const p of (positionsBlock.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
         {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
     }
-    cashPct += block.cash_money_market_pct||0;
+    cashPct += positionsBlock.cash_money_market_pct||0;
   } else if(schemeKey === 'scheme5'){
-    for(const s of (a.sleeves||[])){
+    for(const s of (block.sleeves||[])){
       // The primary ticker's own metadata carries the twin reference (per the
       // producer: for leveraged sleeves this is the REAL 1x twin's live
-      // signal/levels, not the synthetic 2x series — see alloc_scheme5_live.py).
+      // signal/levels, not the synthetic 2x series — see alloc_live.py).
       add(s.primary_ticker||s.sleeve, s.sleeve, s.hold_primary_pct||0,
         {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null});
       if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0){
@@ -305,7 +330,11 @@ function buildSchemeTargets(schemeKey){
       cashPct += s.cash_pct||0;
     }
   } else return null;
-  return {targets, cashPct};
+  // rebalance_band_pp is the scheme's own declared drift tolerance for its
+  // B&H legs (see the producer's note: "Fund/Gold/Bonds sind Buy&Hold (±5pp
+  // Rebalance-Band)") -- absent/0 means no band.
+  const band = isNum(block.rebalance_band_pp) ? block.rebalance_band_pp : 0;
+  return {targets, cashPct, band};
 }
 
 // ISIN heuristic (ISO 6166: 2 letters + 9 alnum + 1 check digit) -- the scheme/
@@ -326,6 +355,7 @@ const ORDER_HINT_REASON_DE = {
   breakdown_lower:    () => 'Market — Ausbruch unter unteres Band',
   sell_into_strength: price => `Limit @ ${price.toFixed(2)} — Verkauf in Stärke`,
   no_resistance:      () => 'Market — kein Widerstand über Kurs',
+  ml_off_exit:        () => 'Market — ML-Off-Exit (De-Risk-Verkäufe nie per Limit)',
 };
 
 // hint is report.order_hints[direction] ({type, price, reason}) for a held
@@ -346,6 +376,10 @@ function localizeOrderHint(hint, direction){
 // instrument not yet held is a full buy from cash. Same formula whether the
 // portfolio has never matched the scheme (large trades) or already does
 // (small drift-correction trades) — there is no separate "rebalance mode".
+// The scheme's rebalance_band_pp additionally suppresses drift corrections on
+// already-held B&H legs (no ml_signal) while |drift| < band — drift within the
+// band is deliberate holding, not a trade signal. ML-timed legs are exempt: a
+// conviction-driven target change is the strategy speaking, never band-eaten.
 function computeSchemeTrades(schemeKey){
   const built = buildSchemeTargets(schemeKey);
   const holdings = portfolioHoldingsData;
@@ -392,6 +426,10 @@ function computeSchemeTrades(schemeKey){
     const viaProxy = meta && meta.viaProxy && held && held.levels;
     const rowMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
+    // Band check uses the SCHEME's own meta (stance), not the holding's report
+    // signal: B&H legs carry no ml_signal in the scheme JSON, timed legs do.
+    const bandHeld = built.band > 0 && curVal > 0 && !(meta && meta.ml_signal);
+    if(bandHeld && Math.abs(trade) / total * 100 < built.band) continue;
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
       const hint = held && held.orderHints ? held.orderHints[dir] : null;
@@ -406,7 +444,7 @@ function computeSchemeTrades(schemeKey){
       meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell')});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
-  return {total, rows, fx: holdings.fx, excludedHeld};
+  return {total, rows, fx: holdings.fx, excludedHeld, band: built.band};
 }
 
 // Inverse of convertCHF: interpret a value typed in the display currency as CHF.
@@ -582,7 +620,8 @@ let _lastWithdrawalResult = null;
 function renderTradesHtml(result){
   _lastTradesResult = result;
   if(!result || !result.rows.length){
-    return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (keine Trades &gt; 0.5% oder &gt;1000 CHF).</p>`;
+    const bandPart = result && result.band > 0 ? `B&amp;H-Abweichungen &le; &plusmn;${result.band}pp, ` : '';
+    return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (${bandPart}keine Trades &gt; 0.5% oder &gt;1000 CHF).</p>`;
   }
   const currency = getCurrency();
   // Jetzt/Ziel/Trade: same values already shown per-row in the detail sheet
@@ -1718,7 +1757,7 @@ const ALLOC_COLS = [
 
 // Compact "CAGR X% · MaxDD Y% · Sharpe Z" line for the documented backtested
 // headline metrics (docs/ALLOCATION_STATUS.md; producer emits them statically,
-// see scripts/alloc_scheme5_live.py HYBRID_METRICS/SCHEME5_METRICS).
+// see scripts/alloc_live.py HYBRID_METRICS/SCHEME5_METRICS).
 function metricsBoxHtml(m){
   if(!m) return '';
   const cagr   = isNum(m.cagr_pct)  ? fPct(m.cagr_pct/100)  : '—';
@@ -1789,18 +1828,16 @@ export function renderAllocation(){
 
   if(schemeSel) schemeSel.style.display='';
   const scheme = (schemeSel && schemeSel.value) || 'hybrid';
+  const block = a.schemes && a.schemes[scheme];
 
   if(metaEl){
     metaEl.style.display='';
-    // a.label is scheme5's own top-level label -- hybrid/techheavy carry their
-    // own label (+ research flag) on their block instead, so the header must
-    // pick the one matching the currently selected scheme, not always the
-    // top-level one. Any positions-shaped block (hybrid/techheavy/cashout/…)
-    // carries its own label the same way; scheme5 is the one exception (its
-    // label lives at the top level, since it predates this convention).
-    const schemeBlock = (a[scheme] && Array.isArray(a[scheme].positions)) ? a[scheme] : a;
-    const schemeLabel = schemeBlock && schemeBlock.label;
-    const researchBadge = (schemeBlock && schemeBlock.research)
+    // Every scheme block (scheme5 included) carries its own label + research
+    // flag under a.schemes[scheme] -- uniform since the producer's 2026-07-16
+    // reshape (previously scheme5's label lived at the payload root, the one
+    // exception to this pattern).
+    const schemeLabel = block && block.label;
+    const researchBadge = (block && block.research)
       ? ' <span class="alloc-research-badge">Research</span>' : '';
     const activeBadge = getActiveScheme()===scheme
       ? ' <span class="badge-active" style="color:#4ade80;font-weight:600;">● AKTIV</span>' : '';
@@ -1817,10 +1854,10 @@ export function renderAllocation(){
   }
 
   if(hybridEl){
-    const block = (a[scheme] && Array.isArray(a[scheme].positions)) ? a[scheme] : null;
-    if(block){
+    const positionsBlock = (block && Array.isArray(block.positions)) ? block : null;
+    if(positionsBlock){
       hybridEl.style.display='';
-      hybridEl.innerHTML = renderHybridHtml(block);
+      hybridEl.innerHTML = renderHybridHtml(positionsBlock);
     } else {
       hybridEl.style.display='none';
       hybridEl.innerHTML='';
@@ -1833,7 +1870,7 @@ export function renderAllocation(){
     ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
     const thead=$('#alloc-tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
 
-    const sleeves = (a.sleeves||[]).slice().sort((x,y)=>
+    const sleeves = ((block && block.sleeves)||[]).slice().sort((x,y)=>
       ((y.hold_primary_pct||0)+(y.hold_1x_pct||0)) - ((x.hold_primary_pct||0)+(x.hold_1x_pct||0)));
 
     const tb=$('#alloc-tbl tbody'); tb.innerHTML='';
@@ -1860,14 +1897,14 @@ export function renderAllocation(){
   if(footEl){
     if(scheme==='scheme5'){
       footEl.style.display='';
-      const caveats = Array.isArray(a.caveats) ? a.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
+      const caveats = Array.isArray(block && block.caveats) ? block.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
       footEl.innerHTML = `
         <div class="alloc-totals">
-          <span><b>${fPct((a.in_1x_twins_pct||0)/100)}</b> in 1× Twins</span>
-          <span><b>${fPct((a.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
+          <span><b>${fPct(((block && block.in_1x_twins_pct)||0)/100)}</b> in 1× Twins</span>
+          <span><b>${fPct(((block && block.cash_money_market_pct)||0)/100)}</b> CHF Geldmarkt</span>
         </div>
-        <p class="hint alloc-hint">${esc(a.derisk_rule||'')}</p>
-        <p class="hint alloc-hint">${esc(a.cash_destination||'')}</p>
+        <p class="hint alloc-hint">${esc((block && block.derisk_rule)||'')}</p>
+        <p class="hint alloc-hint">${esc((block && block.cash_destination)||'')}</p>
         ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
       `;
     } else {

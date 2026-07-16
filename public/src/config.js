@@ -40,7 +40,7 @@ export const CONFIG = {
   STOCKS_DIGEST_PATH:    '/api/stocks/digest',     // GET → digest_latest.txt as text/plain
   STOCKS_DIGEST_MD_PATH: '/api/stocks/digest.md',  // GET → digest_latest.md as text/markdown
   STOCKS_PORTFOLIO_SERIES_PATH: '/api/stocks/portfolio_series', // GET ?list=<label>
-  STOCKS_ALLOCATION_PATH: '/api/stocks/allocation', // GET → allocation_scheme5.json (scheme-#5 sleeves)
+  STOCKS_ALLOCATION_PATH: '/api/stocks/allocation', // GET → allocation.json (schemes: scheme5/hybrid/techheavy/cashout)
   STOCKS_METRICS_PATH: '/api/stocks/metrics', // GET → backtest_metrics.json (per-ticker slim backtest)
   STOCKS_PORTFOLIO_EXCLUDE_PATH: '/api/stocks/portfolio_exclude', // GET → {tickers:[{ticker,name,exposure,currency,'as of'}]}
   STOCKS_RESEARCH_LISTS_PATH: '/api/stocks/research_lists', // GET → [{key,label}] (Input/research/*.csv, hidden by default)

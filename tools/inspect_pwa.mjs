@@ -144,7 +144,10 @@ await context.route('**/api/stocks/**', async route => {
       return jres(route, keys.map(k => ({ key: k, label: k, builtin: k === 'Portfolio' || k === 'Watchlist' })));
     }
     if (ep === 'allocation') {
-      const f = path.join(OUTPUT_DIR, 'allocation_scheme5.json');
+      // Mixed-version safety, mirrors server.js: prefer the current file, fall
+      // back to the pre-rename one if only that exists on disk.
+      let f = path.join(OUTPUT_DIR, 'allocation.json');
+      if (!existsSync(f)) f = path.join(OUTPUT_DIR, 'allocation_scheme5.json');
       return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
     }
     if (ep === 'metrics') {
