@@ -1249,6 +1249,31 @@ async function ensureSeries(ticker) {
   }
 }
 
+// "Full" range: the capped/embedded series above is ~1.5y (CONFIG['series_max_bars']
+// server-side). The Full button instead lazily fetches the ticker's whole uncapped
+// history straight from store.db via GET .../series?ticker=&full=1 (server.js's
+// spawnSeriesFull path) -- same single-ticker { date, open, ... } shape as the
+// capped endpoint, so it drops straight into r.series/curSeries() unchanged.
+// Cached per-ticker (fetched at most once) and swapped into r.series in place --
+// other ranges (120d/60d/14d) just slice whatever's already there, so once a
+// ticker's full history is loaded they benefit too without a second fetch.
+const fullSeriesCache = new Map();
+const fullSeriesUrl = (ticker) => getActiveBase() + CONFIG.STOCKS_SERIES_PATH + '?ticker=' + encodeURIComponent(ticker) + '&full=1';
+async function ensureFullSeries(ticker) {
+  const r = ROWS.find(t => t.ticker === ticker);
+  if (!r) return;
+  if (fullSeriesCache.has(ticker)) { r.series = fullSeriesCache.get(ticker); return; }
+  try {
+    const data = await apiJson(fullSeriesUrl(ticker));
+    const s = data && data.ticker;
+    if (s) { fullSeriesCache.set(ticker, s); r.series = s; }
+  } catch (err) {
+    // 404 (ticker not in store.db) or a network/server error -- silently keep
+    // whatever series is already loaded rather than blanking the chart.
+    console.warn('ensureFullSeries failed:', err.message);
+  }
+}
+
 async function apiJson(url){
   let r;
   try {
@@ -1645,10 +1670,22 @@ function openRowSheet(ticker){
   const oh = r.order_hint;
   const orderDir = orderDirection(r);
   const orderCls = orderDir==='buy' ? 'pos' : (orderDir==='sell' ? 'neg' : '');
+  // Opposite-direction level: r.order_hints ({buy,sell}, backend's
+  // order_hint.py order_hints_both()) carries real limit/market levels for
+  // BOTH directions on every held ticker -- the tile above already shows
+  // today's ML-signal-driven direction, this adds the other side beneath it.
+  // Falls back to nothing when order_hints is absent (stale pre-upgrade
+  // report) or the direction is ambiguous (no clear buy/sell signal, so
+  // there's no defined "opposite" of the primary tile).
+  const oppDir = orderDir==='buy' ? 'sell' : (orderDir==='sell' ? 'buy' : null);
+  const oppHint = (oppDir && r.order_hints) ? localizeOrderHint(r.order_hints[oppDir], oppDir) : null;
+  const oppLabel = oppDir==='buy' ? 'Kauf-Limit' : 'Verkauf-Limit';
+  const oppHtml = oppHint ? `<div class="rs-metric"><span class="rs-metric-label">${esc(oppLabel)}</span><span class="rs-metric-value num ${oppDir==='buy'?'pos':'neg'}">${esc(oppHint.type==='market'?'Market':'Limit')}${oppHint.price!=null?(' @ '+oppHint.price):''}</span></div>` : '';
   const orderHtml = oh ? `<div class="row-sheet-section">
     <div class="row-sheet-section-label">Ordervorschlag</div>
     <div class="rs-metrics">
       <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value num ${orderCls}">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price):''}</span></div>
+      ${oppHtml}
     </div>
     <div class="rs-order-rationale">${esc(oh.rationale||'')}</div>
   </div>` : '';
@@ -2022,7 +2059,13 @@ function renderRanges(){
   const opts=[['Full',Infinity],['120d',120],['60d',60],['14d',14]];
   const box=$('#ranges'); box.innerHTML='';
   opts.forEach(([lbl,n])=>{ const b=document.createElement('button'); b.className='btn'+(viewLen===n?' active':''); b.textContent=lbl;
-    b.onclick=()=>{ viewLen=n; renderRanges(); draw(); }; box.appendChild(b); });
+    b.onclick=()=>{
+      viewLen=n; renderRanges(); draw();
+      // Full range: deep-fetch (cached, at most once per ticker) then redraw
+      // with the swapped-in series -- see ensureFullSeries().
+      if(lbl==='Full' && selected) ensureFullSeries(selected).then(()=>{ if(chartsVisible) draw(); });
+    };
+    box.appendChild(b); });
 }
 
 // ---------- charts (dependency-free canvas) ----------

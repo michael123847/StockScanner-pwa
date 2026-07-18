@@ -197,7 +197,10 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .legend i{display:inline-block;width:14px;height:0;border-top-width:3px;border-top-style:solid;vertical-align:middle;margin-right:5px}
 
 /* ── Digest tab ──────────────────────────────────────────────────────────── */
-.digest-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+/* margin-top closes the gap to #digest-subtab-bar above (.chart-controls, shared
+   with the Charts tab range row, has no bottom padding -- fixed here instead of
+   touching that shared class). */
+.digest-toolbar{display:flex;align-items:center;gap:12px;margin-top:10px;margin-bottom:14px}
 .digest-stamp{font-size:.75rem;color:var(--text-dim)}
 .digest-pre{
   white-space:pre-wrap;word-break:break-word;
