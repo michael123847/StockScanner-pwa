@@ -48,12 +48,12 @@
     <div id="alloc-panel" style="display:none">
       <div class="alloc-scheme-row">
         <select id="alloc-scheme-sel" title="Schema wählen" style="display:none">
-          <option value="hybrid">Hybrid 55/15/15/15 (real-money)</option>
-          <option value="scheme5">#5 Sharpshooter (Research)</option>
-          <option value="techheavy">Tech Heavy (Research, T1)</option>
+          <option value="hybrid">Hybrid 55/15/15/15</option>
+          <option value="scheme5">#5 Sharpshooter</option>
+          <option value="techheavy">Tech Heavy</option>
           <option value="cashout">Cash-Out 24m</option>
         </select>
-        <button id="alloc-activate-btn" type="button" class="info-btn" style="display:none;flex:none;min-width:0;padding:8px 14px;">Aktivieren</button>
+        <button id="alloc-activate-btn" type="button" class="info-btn" style="display:none;flex:none;min-width:0;padding:8px 14px;border-radius:8px;font-size:14px;align-self:stretch;">Aktivieren</button>
       </div>
       <div id="alloc-meta" class="hint" style="display:none"></div>
       <div id="alloc-hybrid" style="display:none"></div>
@@ -64,7 +64,7 @@
       <div id="alloc-trades" style="display:none"></div>
       <div id="alloc-addcash-panel" class="alloc-addcash-panel" style="display:none">
         <label for="alloc-addcash" class="section-label">Neue Einzahlung / Entnahme (− Betrag)</label>
-        <input id="alloc-addcash" type="number" step="1" inputmode="decimal" placeholder="Betrag…">
+        <input id="alloc-addcash" type="text" inputmode="text" autocomplete="off" placeholder="Betrag (− = Entnahme)…">
         <div id="alloc-addcash-out"></div>
       </div>
     </div>

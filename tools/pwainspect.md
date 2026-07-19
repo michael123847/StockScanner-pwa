@@ -34,7 +34,8 @@ SS_OUTPUT=C:/Projects/StockScanner/Output node tools/inspect_pwa.mjs
 ```
 
 Interaction flags (all optional, applied in this order: report/list → tab →
-ticker → click → filter → toggle → select → type → reload → screenshot):
+ticker → click → filter → toggle → select → type → scrollTo → reload →
+screenshot):
 
 | Flag | Meaning |
 |---|---|
@@ -44,6 +45,7 @@ ticker → click → filter → toggle → select → type → reload → screen
 | `--toggle="#chk-dp,#chk-mllive"` | click by raw CSS selector (checkboxes) |
 | `--select="#table-preset-sel=backtest,#currency-sel=USD"` | set `<select>` values |
 | `--type="#pf-search-input=AAPL"` | fill an input |
+| `--scrollTo="#alloc-addcash-panel"` | scroll an element's bottom edge into view (native `scrollIntoView({block:'end'})`) — use when `--type`/`--click`'s minimal auto-scroll leaves a just-revealed panel straddling the viewport bottom |
 | `--filter=text` | type into `#filter` (tests the 150 ms debounce) |
 | `--reload` | full reload after the above — proves localStorage prefs survive cold boot |
 | `--eval="<js>"` | evaluate in page context, print JSON — layout forensics |
@@ -75,6 +77,41 @@ node tools/inspect_pwa.mjs --mobile --tab=Digest --eval="(() => {
 Anything with `x >= innerWidth` is unreachable; any wrapper where
 `scrollWidth - clientWidth > 0` without `overflow-x: auto` is a clipped-content
 bug.
+
+### Gotchas (hard-won)
+
+- **`--click` matches `<button>`/`.btn` only.** Table rows aren't buttons — use
+  `--toggle="<css>"` (raw CSS selector click) to open a row.
+- **The row-sheet only opens in compact/mobile table mode** (`renderCompact`
+  wires `openRowSheet`); on desktop a row click navigates to Charts instead.
+  Always pass `--mobile` for any row-sheet assertion.
+- **`--eval` runs AFTER the screenshot** — it's forensics on the state the
+  screenshot already captured, not a way to set up the shot (can't
+  scroll-then-shoot via `--eval`; see `--scrollTo` below for that). Its
+  `eval result :` line prints BEFORE the summary block in stdout — capture and
+  read the full output, don't `tail` it or you'll miss the eval result.
+- **Row-sheet has internal `max-height:70vh` scroll** — a `fullPage`
+  screenshot cuts its lower sections off; assert row-sheet content via DOM
+  text (`--eval`), not by eye on the screenshot.
+- **`ROWS`/`DATA` are ES-module-scoped**, unreachable from `--eval` (which runs
+  in page context but outside the module closure). Read the on-disk
+  `Output/*.json` files for ground truth instead of trying to read page state.
+- **The mock does not route `series?ticker=&full=1`.** A Full-range click
+  exercises the PWA's silent-404 fallback by design in the mock — deep-history
+  render can't be proven this way; it needs the real companion API.
+- **The app's tab panes (`#page-*`) are `overflow-y:auto` inside a
+  fixed-height flex shell, not the document itself** — `document.scrollingElement`
+  never scrolls (always equals viewport height), so a plain `fullPage`
+  screenshot only ever shows whatever is currently scrolled into the *pane's*
+  view, not the whole tab content. `--type`/`--click`'s built-in
+  actionability auto-scroll only moves the minimal amount needed (nearest
+  edge), which can leave a just-revealed panel straddling the viewport bottom
+  (half on-screen, half hidden behind the fixed bottom nav). Use
+  `--scrollTo="<css>"` to jump that panel's scrollable ancestor to the bottom
+  before the shot — it runs twice with a gap internally, since a preceding
+  `--type`'s debounced re-render (e.g. Allokation's add-cash table, ~250ms)
+  can grow the container *after* the first pass already scrolled to the
+  then-shorter bottom.
 
 ---
 

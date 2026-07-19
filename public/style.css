@@ -152,6 +152,8 @@ td a:hover{text-decoration:underline}
 #alloc-meta{margin:0 0 8px}
 .alloc-totals{display:flex;gap:18px;flex-wrap:wrap;margin:10px 2px 4px;font-size:13px}
 .alloc-totals b{color:var(--text)}
+/* Backtest-window caption: own line under the CAGR/MaxDD/Sharpe row, dimmed. */
+.alloc-metrics-period{flex-basis:100%;gap:0;color:var(--text-dim);font-size:12px;margin-top:-2px}
 .alloc-hint{margin:6px 2px 0}
 .alloc-caveats{margin:8px 2px 0;padding-left:18px;color:var(--text-dim);font-size:12px}
 .alloc-caveats li{margin:2px 0}
@@ -197,10 +199,15 @@ canvas{width:100%;display:block;touch-action:pan-y}
 .legend i{display:inline-block;width:14px;height:0;border-top-width:3px;border-top-style:solid;vertical-align:middle;margin-right:5px}
 
 /* ── Digest tab ──────────────────────────────────────────────────────────── */
-/* margin-top closes the gap to #digest-subtab-bar above (.chart-controls, shared
-   with the Charts tab range row, has no bottom padding -- fixed here instead of
-   touching that shared class). */
-.digest-toolbar{display:flex;align-items:center;gap:12px;margin-top:10px;margin-bottom:14px}
+.digest-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+/* #digest-subtab-bar reuses .chart-controls (padding:8px 12px 0), which indents
+   its two toggle buttons 12px further than the panel content below (scheme row,
+   digest toolbar). Zero the horizontal padding so the Digest|Allokation buttons
+   line up with the dropdown / Aktivieren row under them. The 10px bottom padding
+   lives on this shared bar (not on .digest-toolbar's margin-top) so BOTH
+   sub-panels -- the Digest toolbar row and the Allokation scheme row -- get the
+   same gap below the toggle bar. */
+#digest-subtab-bar{padding:8px 0 10px}
 .digest-stamp{font-size:.75rem;color:var(--text-dim)}
 .digest-pre{
   white-space:pre-wrap;word-break:break-word;

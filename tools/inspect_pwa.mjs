@@ -302,6 +302,38 @@ if (args.type) {
     await page.waitForTimeout(200);
   }
 }
+// --scrollTo="#selector" — scroll an element's BOTTOM edge into view before
+// the screenshot. page.fill()/click() only auto-scroll the minimal amount
+// needed for actionability (nearest edge), which can leave a just-revealed
+// panel straddling the viewport bottom — use this to pull it fully into frame.
+if (args.scrollTo) {
+  const doScroll = (s) => page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    // Walk up to the nearest actually-scrollable ancestor (this app's tab
+    // panes are `overflow-y:auto` inside a fixed-height flex shell, so
+    // `document.scrollingElement` never scrolls) and jump it to the bottom.
+    let node = el;
+    while (node && node !== document.body) {
+      const cs = getComputedStyle(node);
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+        node.scrollTop = node.scrollHeight;
+        break;
+      }
+      node = node.parentElement;
+    }
+  }, s).catch(() => {});
+  for (const sel of String(args.scrollTo).split(',').map(s => s.trim()).filter(Boolean)) {
+    // Run twice with a gap: a preceding --type's debounced re-render (e.g.
+    // Allokation's add-cash table, ~250ms) can grow the container's
+    // scrollHeight *after* the first pass already scrolled to the (then
+    // shorter) bottom — the second pass catches the settled height.
+    await doScroll(sel);
+    await page.waitForTimeout(300);
+    await doScroll(sel);
+    await page.waitForTimeout(150);
+  }
+}
 // --reload — full page reload after all the above, to check localStorage-backed
 // prefs (chart type, overlay/rec checkboxes, token, active base) survive a cold
 // boot the same way they were left, not just within one live session.

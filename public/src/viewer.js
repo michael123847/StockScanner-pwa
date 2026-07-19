@@ -523,10 +523,35 @@ function computeAddCash(schemeKey, cashChf){
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
     rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints}));
   } else {
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.shortfall / sumShortfall, meta: l.meta, orderHints: l.orderHints}));
+    // Greedy water-fill: pour the deposit into the largest absolute shortfall
+    // first, spilling to the next leg only once the current one reaches target.
+    // A small deposit thus lands as ONE actionable trade in the most-underweight
+    // position instead of being split proportionally into sub-threshold slivers
+    // that the MIN_ORDER_CHF filter below would drop, leaving no recommendation
+    // at all. Biggest gaps first also cuts tracking error to target fastest per
+    // franc, and mirrors how one actually invests new cash: top up whatever is
+    // furthest below plan.
+    const ordered = [...legs].sort((a, b) => b.shortfall - a.shortfall);
+    let remaining = cashChf;
+    rows = [];
+    for(const l of ordered){
+      if(remaining <= 0) break;
+      const put = Math.min(l.shortfall, remaining);
+      remaining -= put;
+      rows.push({ticker: l.ticker, name: l.name, amount: put, meta: l.meta, orderHints: l.orderHints});
+    }
   }
 
   rows = rows.filter(r => r.amount / cashChf * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
+  if(rows.length === 0 && cashChf >= MIN_ORDER_CHF && legs.length){
+    // Deposit fragmented across several near-filled gaps, so every greedy leg
+    // came in under MIN_ORDER: fall back to a single trade of the whole amount
+    // into the most-underweight leg, so a >=1000 CHF deposit is always
+    // actionable (may slightly overshoot that one leg's target — self-corrects
+    // at the next rebalance, preferable to showing "no trades").
+    const top = legs.reduce((a, b) => b.shortfall > a.shortfall ? b : a);
+    rows = [{ticker: top.ticker, name: top.name, amount: cashChf, meta: top.meta, orderHints: top.orderHints}];
+  }
   rows.sort((x,y) => y.amount - x.amount);
   // Additive-only: every row is a buy by construction.
   rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.buy : null, 'buy'); });
@@ -1800,10 +1825,15 @@ function metricsBoxHtml(m){
   const cagr   = isNum(m.cagr_pct)  ? fPct(m.cagr_pct/100)  : '—';
   const maxdd  = isNum(m.maxdd_pct) ? fPct(m.maxdd_pct/100) : '—';
   const sharpe = isNum(m.sharpe)    ? m.sharpe.toFixed(2)   : '—';
+  // Backtest window the headline metrics are measured over (producer-supplied,
+  // per scheme — see alloc_live.py *_METRICS). Shown so the numbers aren't read
+  // as forward/live figures.
+  const period = m.period ? `<span class="alloc-metrics-period">Backtest ${esc(m.period)}</span>` : '';
   return `<div class="alloc-totals alloc-metrics">
     <span>CAGR <b>${cagr}</b></span>
     <span>MaxDD <b>${maxdd}</b></span>
     <span>Sharpe <b>${sharpe}</b></span>
+    ${period}
   </div>`;
 }
 
@@ -1982,7 +2012,10 @@ function renderAddCash(){
   if(!out || !input) return;
   const raw = input.value.trim();
   if(!raw){ out.innerHTML=''; return; }
-  const typed = Number(raw);
+  // Input is type="text" (not "number") so a leading "-" for a withdrawal is
+  // typable on mobile keypads that hide the minus key. Parse leniently: accept
+  // a comma decimal separator and CH thousands apostrophes/spaces.
+  const typed = Number(raw.replace(/[’'\s]/g, '').replace(',', '.'));
   if(!isNum(typed) || typed === 0){ out.innerHTML=''; return; }
   const scheme = (schemeSel && schemeSel.value) || 'hybrid';
   // Negative amount = withdrawal (computeWithdrawal), positive = add-cash
