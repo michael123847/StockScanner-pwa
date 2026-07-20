@@ -153,6 +153,15 @@ export async function ensureAllocation(){
     const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
     allocationData = normalizeAllocationPayload(await apiJson(url));
     updateSchemeDropdownLabels(allocationData);
+    // Default the dropdown to whatever the user has marked "Aktiv" (see
+    // getActiveScheme) rather than always opening on the first <option>
+    // (hybrid) -- this only runs once (allocationTried guards the whole
+    // function), so a later manual dropdown change is never overwritten.
+    const schemeSel = $('#alloc-scheme-sel');
+    const active = getActiveScheme();
+    if(schemeSel && active && allocationData.schemes && allocationData.schemes[active]){
+      schemeSel.value = active;
+    }
   }catch(err){
     allocationData = null;
     console.warn('allocation fetch failed:', err.message);
@@ -302,6 +311,7 @@ function buildSchemeTargets(schemeKey){
     });
   };
   let cashPct = 0;
+  let cashIsin = null;
   // Any "positions"-shaped block (hybrid/techheavy/cashout/…) shares this
   // branch -- adding a new scheme to the producer's JSON needs no new PWA
   // branch here as long as it follows the same shape.
@@ -312,7 +322,9 @@ function buildSchemeTargets(schemeKey){
         {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
+    cashIsin = positionsBlock.cash_isin || null;
   } else if(schemeKey === 'scheme5'){
+    cashIsin = block.cash_isin || null;
     for(const s of (block.sleeves||[])){
       // The primary ticker's own metadata carries the twin reference (per the
       // producer: for leveraged sleeves this is the REAL 1x twin's live
@@ -334,7 +346,7 @@ function buildSchemeTargets(schemeKey){
   // B&H legs (see the producer's note: "Fund/Gold/Bonds sind Buy&Hold (±5pp
   // Rebalance-Band)") -- absent/0 means no band.
   const band = isNum(block.rebalance_band_pp) ? block.rebalance_band_pp : 0;
-  return {targets, cashPct, band};
+  return {targets, cashPct, cashIsin, band};
 }
 
 // ISIN heuristic (ISO 6166: 2 letters + 9 alnum + 1 check digit) -- the scheme/
@@ -438,7 +450,7 @@ function computeSchemeTrades(schemeKey){
     }
   }
   const cashTarget = total * built.cashPct / 100;
-  if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null});
+  if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null, isin: built.cashIsin});
   for(const [tk, {value, name, levels, ml_signal, orderHints}] of byTicker){
     if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
       meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell')});
@@ -507,7 +519,7 @@ function computeAddCash(schemeKey, cashChf){
   }
   if(built.cashPct > 0){
     legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, meta: null,
-      orderHints: null,
+      orderHints: null, isin: built.cashIsin,
       shortfall: Math.max(0, newTotal * built.cashPct / 100)});
   }
 
@@ -517,11 +529,11 @@ function computeAddCash(schemeKey, cashChf){
     // No shortfalls at all (portfolio already at/above every target) — spread
     // the whole amount pro-rata by weight since there's nothing to "catch up".
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, isin: l.isin}));
   } else if(sumShortfall <= cashChf){
     const leftover = cashChf - sumShortfall;
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, isin: l.isin}));
   } else {
     // Greedy water-fill: pour the deposit into the largest absolute shortfall
     // first, spilling to the next leg only once the current one reaches target.
@@ -538,7 +550,7 @@ function computeAddCash(schemeKey, cashChf){
       if(remaining <= 0) break;
       const put = Math.min(l.shortfall, remaining);
       remaining -= put;
-      rows.push({ticker: l.ticker, name: l.name, amount: put, meta: l.meta, orderHints: l.orderHints});
+      rows.push({ticker: l.ticker, name: l.name, amount: put, meta: l.meta, orderHints: l.orderHints, isin: l.isin});
     }
   }
 
@@ -550,7 +562,7 @@ function computeAddCash(schemeKey, cashChf){
     // actionable (may slightly overshoot that one leg's target — self-corrects
     // at the next rebalance, preferable to showing "no trades").
     const top = legs.reduce((a, b) => b.shortfall > a.shortfall ? b : a);
-    rows = [{ticker: top.ticker, name: top.name, amount: cashChf, meta: top.meta, orderHints: top.orderHints}];
+    rows = [{ticker: top.ticker, name: top.name, amount: cashChf, meta: top.meta, orderHints: top.orderHints, isin: top.isin}];
   }
   rows.sort((x,y) => y.amount - x.amount);
   // Additive-only: every row is a buy by construction.
@@ -623,7 +635,7 @@ function computeWithdrawal(schemeKey, cashChf){
   rows = rows.filter(r => r.amount > 0 && r.amount / W * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
   rows.sort((x,y) => y.amount - x.amount);
   rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.sell : null, 'sell'); });
-  rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', amount: W, meta: null, orderHints: null, orderHint: null});
+  rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', amount: W, meta: null, orderHints: null, orderHint: null, isin: built.cashIsin});
   return {cash: W, rows, fx: holdings.fx};
 }
 
@@ -782,8 +794,11 @@ function openTradeSheet(row, ctx){
   const dir = isAddCash ? 'buy' : isWithdrawal ? 'sell' : (row.trade > 0 ? 'buy' : (row.trade < 0 ? 'sell' : null));
   const ohCls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
 
-  const isinTile = isIsin(row.ticker) ? `<div class="rs-metric"><span class="rs-metric-label">ISIN</span>
-    <span class="rs-metric-value">${esc(row.ticker)} ${copyBtnHtml(row.ticker)}</span></div>` : '';
+  // row.isin covers legs whose display ticker is a sentinel (e.g. the synthetic
+  // 'CASH' row) rather than the instrument itself -- see buildSchemeTargets' cashIsin.
+  const isinVal = isIsin(row.ticker) ? row.ticker : (row.isin || null);
+  const isinTile = isinVal ? `<div class="rs-metric"><span class="rs-metric-label">ISIN</span>
+    <span class="rs-metric-value">${esc(isinVal)} ${copyBtnHtml(isinVal)}</span></div>` : '';
 
   let twinTile = '';
   if(meta.twin){
