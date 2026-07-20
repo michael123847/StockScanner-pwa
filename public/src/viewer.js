@@ -1869,9 +1869,10 @@ function renderHybridHtml(h){
       </table>
     </div>
     <div class="alloc-totals">
-      <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt</span>
+      <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt (SARON)</span>
       <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band</span>
     </div>
+    ${h.cash_destination?`<p class="hint alloc-hint">${esc(h.cash_destination)}</p>`:''}
     ${h.note?`<p class="hint alloc-hint">${esc(h.note)}</p>`:''}
     <p class="hint alloc-hint">Per-Ticker-Evidenz (CAGR/Sharpe vs. Buy&amp;Hold, MaxDD) für jede
       Position: Übersicht → Spalten-Profil <b>Backtest</b>.</p>

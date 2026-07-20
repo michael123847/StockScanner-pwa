@@ -432,26 +432,49 @@ function showMoveMenu(tr, anchor) {
   const others = LISTS.filter(l => l.key !== _activeList);
   if (!others.length) { toast('Keine anderen Listen.', false); return; }
 
-  const menu = document.createElement('div');
-  menu.id = 'pf-move-menu';
-  menu.className = 'pf-action-sheet';
+  // Centered modal prompt (backdrop + card) rather than an anchored popup: the old
+  // popup was positioned off the ⇄ button and dismissed on any next click, which on
+  // mobile often closed before the target tap landed. This asks "move where?" plainly.
+  const backdrop = document.createElement('div');
+  backdrop.className = 'row-sheet-backdrop';
+  backdrop.id = 'pf-move-backdrop';
+
+  const card = document.createElement('div');
+  card.id = 'pf-move-menu';
+  card.className = 'pf-action-sheet pf-move-modal';
+
+  const close = () => { backdrop.remove(); card.remove(); };
+
+  const title = document.createElement('div');
+  title.className = 'pf-move-title';
+  title.innerHTML = `<b>${ticker}</b> verschieben nach:`;
+  card.appendChild(title);
 
   for (const target of others) {
+    const row = document.createElement('div');
+    row.className = 'pf-move-row';
+    const lbl = document.createElement('span');
+    lbl.className = 'pf-move-listname';
+    lbl.textContent = target.label;
     const mv = document.createElement('button');
-    mv.textContent = '→ ' + target.label + ' (verschieben)';
-    mv.addEventListener('click', async () => { menu.remove(); await moveCopyTicker(ticker, name, target.key, false); });
+    mv.textContent = 'Verschieben';
+    mv.addEventListener('click', async () => { close(); await moveCopyTicker(ticker, name, target.key, false); });
     const cp = document.createElement('button');
-    cp.textContent = '⊕ ' + target.label + ' (kopieren)';
-    cp.addEventListener('click', async () => { menu.remove(); await moveCopyTicker(ticker, name, target.key, true); });
-    menu.appendChild(mv);
-    menu.appendChild(cp);
+    cp.textContent = 'Kopieren';
+    cp.addEventListener('click', async () => { close(); await moveCopyTicker(ticker, name, target.key, true); });
+    row.appendChild(lbl); row.appendChild(mv); row.appendChild(cp);
+    card.appendChild(row);
   }
 
-  const rect = anchor.getBoundingClientRect();
-  menu.style.top  = (rect.bottom + 4) + 'px';
-  menu.style.left = Math.max(4, rect.right - 220) + 'px';
-  document.body.appendChild(menu);
-  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  const cancel = document.createElement('button');
+  cancel.className = 'pf-move-cancel';
+  cancel.textContent = 'Abbrechen';
+  cancel.addEventListener('click', close);
+  card.appendChild(cancel);
+
+  backdrop.addEventListener('click', close);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(card);
 }
 
 async function moveCopyTicker(ticker, name, targetKey, copy) {
