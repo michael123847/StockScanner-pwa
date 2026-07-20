@@ -20,7 +20,7 @@ const $ = s => document.querySelector(s);
 const COL = {
   close:'#4ea1ff', ma50:'#ff9f40', ma200:'#ff5c5c',
   fib:['#b07cff','#9b7653','#e377c2','#9aa0aa'],
-  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', rsi:'#4ea1ff'
+  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', recRaw:'#ffb800', rsi:'#4ea1ff'
 };
 let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infinity, hoverIdx=null;
 
@@ -927,7 +927,7 @@ let lastW = 0;
 // ---------- chart prefs ----------
 let chartType = 'line'; // 'line' | 'candle'
 let show50 = true, show200 = true, showFib = true;
-let showRule = true, showDp = true, showMlLive = true;
+let showRule = true, showDp = true, showMlLive = true, showMlRaw = false;
 
 const CHART_PREFS_KEY = 'pwa.stocks.chartPrefs';
 
@@ -941,6 +941,7 @@ function loadChartPrefs() {
     if (typeof p.rule === 'boolean') showRule = p.rule;
     if (typeof p.dp === 'boolean') showDp = p.dp;
     if (typeof p.mlLive === 'boolean') showMlLive = p.mlLive;
+    if (typeof p.mlRaw === 'boolean') showMlRaw = p.mlRaw;
   } catch {}
 }
 
@@ -948,7 +949,7 @@ function saveChartPrefs() {
   try {
     localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({
       type: chartType, ma50: show50, ma200: show200, fib: showFib,
-      rule: showRule, dp: showDp, mlLive: showMlLive,
+      rule: showRule, dp: showDp, mlLive: showMlLive, mlRaw: showMlRaw,
     }));
   } catch {}
 }
@@ -2297,6 +2298,10 @@ function draw(){
     recLegend.push([COL.recO,'DP (Oracle) ∗']);
   }
   if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML']); }
+  // Raw ML output: the signed model probability (Recommendation_SVM, already in [-1,1]),
+  // BEFORE the smoothing/hysteresis the 'ML' line applies -- shown thin so the smoothed
+  // line reads on top. Off by default (a diagnostic overlay).
+  if (showMlRaw && S.rec_ml_raw) { recSeries.push({data:fillSteps(S.rec_ml_raw),color:COL.recRaw,width:1.1}); recLegend.push([COL.recRaw,'Raw ML']); }
 
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
     yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
@@ -2356,6 +2361,8 @@ function showTip(e,S,i){
       // still report a value in the hover panel.
       ['Rule',COL.recF, showRule ? fNum(S.rec_filtered&&S.rec_filtered[i],0) : '—'],
       ['ML',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
+      // Raw ML: continuous signed P(buy) in [-1,1] -- 2 decimals (not 0 like the discrete lines).
+      ['Raw ML',COL.recRaw, (showMlRaw && S.rec_ml_raw && isNum(S.rec_ml_raw[i])) ? S.rec_ml_raw[i].toFixed(2) : '—'],
       // Settled bars show the cut value; unsettled tail shows the look-ahead
       // rec_optimal with a ~ prefix (matches the dashed continuation on the chart).
       ['DP (Oracle)',COL.recO, showDp ? ((S.rec_dp_cut && isNum(S.rec_dp_cut[i]))
@@ -2447,9 +2454,11 @@ export function initViewer(){
   const ruleEl = document.getElementById('chk-rule');
   const dpEl = document.getElementById('chk-dp');
   const mlLiveEl = document.getElementById('chk-mllive');
+  const mlRawEl = document.getElementById('chk-mlraw');
   if (ruleEl) ruleEl.checked = showRule;
   if (dpEl) dpEl.checked = showDp;
   if (mlLiveEl) mlLiveEl.checked = showMlLive;
+  if (mlRawEl) mlRawEl.checked = showMlRaw;
 
   // Wire chart-type buttons
   document.getElementById('btn-line')?.addEventListener('click', () => {
@@ -2480,11 +2489,12 @@ export function initViewer(){
   });
 
   // Wire recommendation-subplot checkboxes
-  ['chk-rule', 'chk-dp', 'chk-mllive'].forEach(id => {
+  ['chk-rule', 'chk-dp', 'chk-mllive', 'chk-mlraw'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', e => {
       if (id === 'chk-rule') showRule = e.target.checked;
       if (id === 'chk-dp') showDp = e.target.checked;
       if (id === 'chk-mllive') showMlLive = e.target.checked;
+      if (id === 'chk-mlraw') showMlRaw = e.target.checked;
       saveChartPrefs();
       draw();
     });
