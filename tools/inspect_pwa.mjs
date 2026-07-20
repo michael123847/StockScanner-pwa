@@ -45,6 +45,11 @@ const REPORT  = args.report || null;    // exact file, e.g. 20260702_Portfolio.j
 const TAB     = args.tab || null;       // bottom-tab label, e.g. Charts
 const TICKER  = args.ticker || null;    // chart-view ticker, e.g. DCUSAS.SW
 const FILTER  = args.filter || null;    // text to type into #filter (debounce test)
+// --seed="ss_active_scheme=techheavy,foo=bar" — extra localStorage entries set
+// BEFORE the first navigation (alongside the token/base seed below), for
+// testing prefs that only matter on a cold load (e.g. "does the app open on
+// what was left active", not "does a click during this session set it").
+const SEED    = args.seed || null;
 const PORT    = Number(args.port || 5177);
 // Endpoints to force to HTTP 404 — exercises missing-data paths such as the
 // apiJson() over-invalidation fix. e.g. SS_DROP=allocation,series
@@ -116,6 +121,13 @@ await context.addInitScript(origin => {
     localStorage.setItem('pwa.bases', JSON.stringify({}));
   } catch { /* ignore */ }
 }, ORIGIN);
+if (SEED) {
+  const pairs = String(SEED).split(',').map(s => s.trim()).filter(Boolean)
+    .map(p => { const eq = p.indexOf('='); return [p.slice(0, eq), p.slice(eq + 1)]; });
+  await context.addInitScript(entries => {
+    try { for (const [k, v] of entries) localStorage.setItem(k, v); } catch { /* ignore */ }
+  }, pairs);
+}
 
 // Fulfil every API call from disk. Matches any host (server.local, LAN, etc.)
 // because the app may pick any base — interception happens before DNS.
