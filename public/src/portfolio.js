@@ -193,9 +193,16 @@ function showEditPopup(tr) {
 
   const rect = tr.getBoundingClientRect();
   popup.style.position = 'fixed';
-  popup.style.top = (rect.bottom + 4) + 'px';
   popup.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 220)) + 'px';
   document.body.appendChild(popup);
+  // Flip above the row when there isn't room below (e.g. a row near the bottom
+  // of the viewport) -- fixed positioning means an off-viewport popup can never
+  // be scrolled into reach, silently stranding the OK/Cancel buttons.
+  const popupHeight = popup.offsetHeight;
+  const top = (rect.bottom + 4 + popupHeight <= window.innerHeight)
+    ? rect.bottom + 4
+    : Math.max(8, rect.top - popupHeight - 4);
+  popup.style.top = top + 'px';
   expInput.focus(); expInput.select();
 
   function confirm() {
