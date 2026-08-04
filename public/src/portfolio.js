@@ -25,6 +25,67 @@ const _state = {};        // keyed by list key: {loaded, dirty}
 let _researchLists = null;   // [{key,label}] or null (not yet fetched)
 let _showResearch = false;
 
+// Today's holding value per ticker, read from the SAME source the Übersicht's
+// "Value" column uses -- the report JSON's per-ticker `holding.value_chf`
+// (units x latest close, FX-converted, computed server-side). Reusing it rather
+// than recomputing here guarantees the two tabs can never disagree.
+// Map is {TICKER: value_chf}; empty on any failure, in which case the editor
+// silently falls back to showing the stored CSV exposure.
+let _todayValues = {};      // per active list
+let _todayValuesList = null;
+let _todayFx = null;        // report's fx snapshot, for CHF -> row-currency
+
+// value_chf -> the row's OWN currency, so the number lines up with what the
+// broker interface shows for that position. Mirrors viewer.js::convertCHFArr's
+// divide-by-rate convention (rates are <CCY>CHF, i.e. CHF per unit).
+function toRowCcy(valueChf, ccy) {
+  if (typeof valueChf !== 'number' || !isFinite(valueChf)) return null;
+  const c = (ccy || 'CHF').toUpperCase();
+  if (c === 'CHF') return valueChf;
+  if (!_todayFx) return null;
+  const r = _todayFx[c + 'CHF'];
+  if (c === 'BTC') {
+    const bu = _todayFx.BTCUSD, uc = _todayFx.USDCHF;
+    return (bu && uc) ? valueChf / (bu * uc) : null;
+  }
+  return (typeof r === 'number' && r !== 0) ? valueChf / r : null;
+}
+
+async function fetchTodayValues(list) {
+  if (_todayValuesList === list) return _todayValues;
+  _todayValues = {}; _todayValuesList = list; _todayFx = null;
+  try {
+    const idxR = await fetch(
+      getActiveBase() + CONFIG.STOCKS_INDEX_PATH,
+      { headers: authHeaders(), cache: 'no-store', credentials: 'omit' },
+    );
+    if (!idxR.ok) return _todayValues;
+    const idx = await idxR.json();
+    // manifest is newest-first; take this list's most recent report
+    const entry = (Array.isArray(idx) ? idx : []).find(
+      e => (e.list || e.label || '') === list || (e.file || '').includes('_' + list + '.json'));
+    if (!entry || !entry.file) return _todayValues;
+    const repR = await fetch(
+      getActiveBase() + CONFIG.STOCKS_REPORT_PATH + '?file=' + encodeURIComponent(entry.file),
+      { headers: authHeaders(), cache: 'no-store', credentials: 'omit' },
+    );
+    if (!repR.ok) return _todayValues;
+    const rep = await repR.json();
+    _todayFx = rep.fx || null;
+    (rep.tickers || []).forEach(t => {
+      const h = t.holding;
+      if (h && typeof h.value_chf === 'number' && isFinite(h.value_chf)) {
+        _todayValues[t.ticker] = h.value_chf;
+      }
+    });
+  } catch { /* offline / no report yet -- fall back to CSV values */ }
+  return _todayValues;
+}
+
+const fmtVal = v => (typeof v === 'number' && isFinite(v))
+  ? v.toLocaleString('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  : '';
+
 async function ensureResearchLists() {
   if (_researchLists !== null) return _researchLists;
   try {
@@ -112,9 +173,39 @@ function buildRow({ ticker = '', name = '', exposure = '', currency = '', isin =
   const expSpan = document.createElement('span');
   expSpan.dataset.field = 'exposure';
   const origExp = (exposure != null && exposure !== '') ? String(exposure) : '';
-  expSpan.textContent = origExp;
+  // CRITICAL: dataset.csvValue is the SAVE source of truth (the stored CSV
+  // exposure, valued at `as of`). textContent is DISPLAY ONLY and shows today's
+  // revalued holding. collectRows() must read csvValue, never textContent --
+  // otherwise saving would write today's value back into the CSV while keeping
+  // the old as-of date, silently corrupting the basis.
+  expSpan.dataset.csvValue  = origExp;
   expSpan.dataset.origValue = origExp;
+  // Displayed in the ROW'S OWN currency (not CHF) so it lines up 1:1 with the
+  // broker interface for that position -- value_chf is only the transport form.
+  const todayChf = _todayValues[ticker];
+  const todayVal = toRowCcy(todayChf, currency);
+  const haveToday = typeof todayVal === 'number' && isFinite(todayVal);
+  expSpan.textContent = haveToday ? fmtVal(todayVal) : origExp;
+  if (haveToday) expSpan.classList.add('pf-today-val');
   expTd.appendChild(expSpan);
+  // Sub-line: what the displayed number IS. With today's value on top, the
+  // stored basis and its Stichtag would otherwise be invisible -- and rows in
+  // one list routinely carry different dates (Portfolio.csv spans 2026-06-13
+  // to 2026-07-29), so a six-week-old basis must not look like today's.
+  const asOfSub = document.createElement('div');
+  asOfSub.className = 'cell-sub pf-asof-sub';
+  asOfSub.dataset.field = 'as-of-display';
+  // Bare date only. The verbose "heute · Basis X per Y" form was measured
+  // ellipsised on mobile (exposure cell is 72px at 390px viewport), and the
+  // DATE is exactly what gets cut -- i.e. the one thing this sub-line exists to
+  // show. The basis value lives one double-click away in the popup, and the
+  // title below carries the full explanation on hover/long-press.
+  asOfSub.textContent = asOf || '—';
+  asOfSub.title = haveToday
+    ? `Heutiger Wert in ${currency || 'CHF'} (Bestand × aktueller Kurs). `
+      + `Basis: ${origExp || '—'} per ${asOf || '—'}. Doppelklick zum Bearbeiten.`
+    : 'Stichtag des Exposures — Doppelklick zum Bearbeiten';
+  expTd.appendChild(asOfSub);
   expTd.addEventListener('dblclick', () => showEditPopup(tr));
   tr.appendChild(expTd);
 
@@ -164,11 +255,13 @@ function showEditPopup(tr) {
   const popup = document.createElement('div');
   popup.id = 'pf-edit-popup';
 
+  // Edits the STORED CSV exposure (the value as of the Stichtag below), never
+  // the today-value shown in the table -- see buildRow's dataset.csvValue note.
   const expLabel = document.createElement('label');
-  expLabel.textContent = 'Exposure';
+  expLabel.textContent = 'Exposure (per Stichtag)';
   const expInput = document.createElement('input');
   expInput.type = 'text'; expInput.inputMode = 'decimal';
-  expInput.value = expSpan ? expSpan.textContent : '';
+  expInput.value = expSpan ? (expSpan.dataset.csvValue || '') : '';
   expLabel.appendChild(expInput);
 
   const ccyLabel = document.createElement('label');
@@ -183,13 +276,26 @@ function showEditPopup(tr) {
   });
   ccyLabel.appendChild(ccySel);
 
+  // Stichtag ("as of") -- the date the exposure above was valued on. Previously
+  // invisible in the UI while being silently rewritten to today on any exposure
+  // edit, so a stale row and a fresh one looked identical. Now shown and
+  // editable: a value entered here is the user's explicit statement of WHEN the
+  // exposure was true, and collectRows() honours it instead of stamping today.
+  const asOfLabel = document.createElement('label');
+  asOfLabel.textContent = 'Stichtag (as of)';
+  const asOfInput = document.createElement('input');
+  asOfInput.type = 'date';
+  asOfInput.value = tr.dataset.asOf || '';
+  asOfLabel.appendChild(asOfInput);
+
   const btns = document.createElement('div');
   btns.className = 'pf-ep-btns';
   const okBtn = document.createElement('button'); okBtn.textContent = 'OK'; okBtn.type = 'button';
   const cancelBtn = document.createElement('button'); cancelBtn.textContent = '✕'; cancelBtn.type = 'button';
   btns.appendChild(okBtn); btns.appendChild(cancelBtn);
 
-  popup.appendChild(expLabel); popup.appendChild(ccyLabel); popup.appendChild(btns);
+  popup.appendChild(expLabel); popup.appendChild(ccyLabel);
+  popup.appendChild(asOfLabel); popup.appendChild(btns);
 
   const rect = tr.getBoundingClientRect();
   popup.style.position = 'fixed';
@@ -206,12 +312,42 @@ function showEditPopup(tr) {
   expInput.focus(); expInput.select();
 
   function confirm() {
+    const origAsOf = tr.dataset.asOf || '';
+    const newAsOf = (asOfInput.value || '').trim();
     if (expSpan) {
       const newVal = expInput.value.trim();
       if (newVal !== (expSpan.dataset.origValue || '')) expSpan.dataset.changed = '1';
-      expSpan.textContent = newVal;
+      // Update the SAVE source; the cell keeps showing today's value unless the
+      // user has now overridden the basis, in which case today's revaluation is
+      // stale until the next scan -- show the entered basis rather than a
+      // number that no longer derives from it.
+      expSpan.dataset.csvValue = newVal;
+      if (expSpan.dataset.changed) {
+        expSpan.textContent = newVal;
+        expSpan.classList.remove('pf-today-val');
+      }
     }
     if (ccySpan) ccySpan.textContent = ccySel.value;
+    // An explicitly edited Stichtag WINS over the auto-stamp: record it and
+    // clear the `changed` flag that would otherwise make collectRows() overwrite
+    // it with today. Editing the exposure alone still auto-stamps today, which
+    // is the old behaviour and the right default.
+    if (newAsOf !== origAsOf) {
+      tr.dataset.asOf = newAsOf;
+      tr.dataset.asOfEdited = '1';
+      if (expSpan) delete expSpan.dataset.changed;
+    }
+    // Keep the visible sub-line in step with whichever date will actually be
+    // saved -- an exposure edit auto-stamps today, so reflect that immediately
+    // rather than leaving the row showing a date save() is about to replace.
+    const sub = tr.querySelector('[data-field="as-of-display"]');
+    if (sub) {
+      const effective = tr.dataset.asOfEdited
+        ? (tr.dataset.asOf || '')
+        : ((expSpan && expSpan.dataset.changed) ? new Date().toISOString().slice(0, 10)
+                                                : (tr.dataset.asOf || ''));
+      sub.textContent = effective || '—';
+    }
     _state[_activeList].dirty = true;
     cleanup();
   }
@@ -231,13 +367,25 @@ function collectRows() {
     const ticker   = tr.querySelector('[data-field=ticker]')?.textContent.trim() || '';
     const name     = tr.querySelector('[data-field=name]')?.textContent.trim()   || '';
     const expEl    = tr.querySelector('[data-field=exposure]');
-    const expRaw   = expEl ? expEl.textContent.trim() : '';
+    // Read dataset.csvValue, NOT textContent: the cell displays today's
+    // revalued holding, and writing that back would overwrite the stored basis
+    // while keeping its old Stichtag. Falls back to textContent only for rows
+    // built before this field existed / added via "+ Zeile".
+    const expRaw   = expEl ? (expEl.dataset.csvValue !== undefined
+                              ? expEl.dataset.csvValue.trim()
+                              : expEl.textContent.trim()) : '';
     const currency = tr.querySelector('[data-field=currency]')?.textContent.trim() || '';
     const exposure = expRaw !== '' ? expRaw : '';
-    // Stamp as-of today only when exposure was changed via popup; otherwise preserve original
+    // As-of resolution, in priority order:
+    //   1. an explicitly edited Stichtag ALWAYS wins -- the user stating when a
+    //      value was true must not be silently overwritten by the auto-stamp;
+    //   2. else exposure changed via the popup -> stamp today (old behaviour);
+    //   3. else preserve the original date the row was loaded with.
     let asOf = '';
     if(exposure !== ''){
-      asOf = (expEl && expEl.dataset.changed) ? today : (tr.dataset.asOf || today);
+      asOf = tr.dataset.asOfEdited ? (tr.dataset.asOf || today)
+           : (expEl && expEl.dataset.changed) ? today
+           : (tr.dataset.asOf || today);
     }
     return { ticker, name, exposure, currency, 'as of': asOf };
   }).filter(e => e.ticker);
@@ -363,6 +511,10 @@ async function load(list) {
       isin:     isIsinCol(n.isin) ? n.isin : '',
       'as of':  n['as of'] || '',
     }; });
+    // Today's values before buildTable, so buildRow can render them directly.
+    // Non-fatal by construction: on any failure the map stays empty and rows
+    // fall back to showing the stored CSV exposure.
+    await fetchTodayValues(list);
     $body.innerHTML = '';
     $body.appendChild(buildTable(entries));
     _state[list].dirty  = false;

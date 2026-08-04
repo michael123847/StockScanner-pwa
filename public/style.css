@@ -148,6 +148,17 @@ td a:hover{text-decoration:underline}
 .alloc-scheme-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 #alloc-scheme-sel{flex:1 1 200px;min-width:0;max-width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:14px;font-family:inherit}
 #alloc-scheme-sel:focus{outline:none;border-color:var(--accent)}
+/* Exposure cell showing a LIVE computed value (today's holding) rather than the
+   stored CSV basis. The sub-line under it is the basis's Stichtag, so the two
+   must be visually distinguishable -- otherwise a computed number and a stored
+   one look identical. Accent-tinted, not bold: it is information, not a warning. */
+.pf-today-val{color:var(--accent)}
+/* ISO date needs 56.3px at .cell-sub's 11px, in a 56px cell at 390px viewport
+   -- a 0.3px overflow that still ellipsises to "2026-06-…", hiding the very
+   thing this line exists to show. 10px gives ~51px and fits with margin.
+   TWO classes deliberately: .cell-sub is declared later in this file, so a bare
+   .pf-asof-sub would lose the equal-specificity tie and silently do nothing. */
+.cell-sub.pf-asof-sub{font-size:10px}
 #alloc-meta{margin:0 0 8px}
 .alloc-totals{display:flex;gap:18px;flex-wrap:wrap;margin:10px 2px 4px;font-size:13px}
 .alloc-totals b{color:var(--text)}
