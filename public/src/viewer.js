@@ -20,7 +20,7 @@ const $ = s => document.querySelector(s);
 const COL = {
   close:'#4ea1ff', ma50:'#ff9f40', ma200:'#ff5c5c',
   fib:['#b07cff','#9b7653','#e377c2','#9aa0aa'],
-  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', recRaw:'#ffb800', rsi:'#4ea1ff'
+  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', recM165:'#c77dff', recRaw:'#ffb800', rsi:'#4ea1ff'
 };
 let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infinity, hoverIdx=null;
 
@@ -133,7 +133,7 @@ function normalizeAllocationPayload(a){
     currency: a.currency,
     schemes: {
       scheme5: {
-        label: a.label, short_label: a.short_label, research: a.research,
+        label: a.label, short_label: a.short_label,
         metrics: a.scheme5_metrics, sleeves: a.sleeves,
         in_1x_twins_pct: a.in_1x_twins_pct, cash_money_market_pct: a.cash_money_market_pct,
         derisk_rule: a.derisk_rule, cash_destination: a.cash_destination, caveats: a.caveats,
@@ -942,7 +942,7 @@ let lastW = 0;
 // ---------- chart prefs ----------
 let chartType = 'line'; // 'line' | 'candle'
 let show50 = true, show200 = true, showFib = true;
-let showRule = true, showDp = true, showMlLive = true, showMlRaw = false;
+let showRule = true, showDp = true, showMlLive = true, showMlLiveR165 = false, showMlRaw = false;
 
 const CHART_PREFS_KEY = 'pwa.stocks.chartPrefs';
 
@@ -956,6 +956,7 @@ function loadChartPrefs() {
     if (typeof p.rule === 'boolean') showRule = p.rule;
     if (typeof p.dp === 'boolean') showDp = p.dp;
     if (typeof p.mlLive === 'boolean') showMlLive = p.mlLive;
+    if (typeof p.mlLiveR165 === 'boolean') showMlLiveR165 = p.mlLiveR165;
     if (typeof p.mlRaw === 'boolean') showMlRaw = p.mlRaw;
   } catch {}
 }
@@ -964,7 +965,7 @@ function saveChartPrefs() {
   try {
     localStorage.setItem(CHART_PREFS_KEY, JSON.stringify({
       type: chartType, ma50: show50, ma200: show200, fib: showFib,
-      rule: showRule, dp: showDp, mlLive: showMlLive, mlRaw: showMlRaw,
+      rule: showRule, dp: showDp, mlLive: showMlLive, mlLiveR165: showMlLiveR165, mlRaw: showMlRaw,
     }));
   } catch {}
 }
@@ -1916,16 +1917,17 @@ export function renderAllocation(){
 
   if(metaEl){
     metaEl.style.display='';
-    // Every scheme block (scheme5 included) carries its own label + research
-    // flag under a.schemes[scheme] -- uniform since the producer's 2026-07-16
-    // reshape (previously scheme5's label lived at the payload root, the one
-    // exception to this pattern).
+    // Every scheme block (scheme5 included) carries its own label under
+    // a.schemes[scheme] -- uniform since the producer's 2026-07-16 reshape
+    // (previously scheme5's label lived at the payload root, the one exception).
+    // The "Research" badge was REMOVED 2026-08-03: which scheme is held is the
+    // user's own decision, so tagging one as research read as a recommendation
+    // not to pick it. Each scheme's substantive caveats still surface via its
+    // metrics note / caveats list -- the facts stayed, only the label went.
     const schemeLabel = block && block.label;
-    const researchBadge = (block && block.research)
-      ? ' <span class="alloc-research-badge">Research</span>' : '';
     const activeBadge = getActiveScheme()===scheme
       ? ' <span class="badge-active" style="color:#4ade80;font-weight:600;">● AKTIV</span>' : '';
-    metaEl.innerHTML = `<b>${esc(schemeLabel||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${researchBadge}${activeBadge}`;
+    metaEl.innerHTML = `<b>${esc(schemeLabel||'')}</b> &nbsp;·&nbsp; ${esc(fmtDate(a.asof||''))} &nbsp;·&nbsp; ${esc(a.currency||'')}${activeBadge}`;
   }
 
   const activateBtn = $('#alloc-activate-btn');
@@ -2314,6 +2316,11 @@ function draw(){
     recLegend.push([COL.recO,'DP (Oracle) ∗']);
   }
   if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML']); }
+  // Challenger (RICH165D rollout, 2026-08-02): same 5-band scale as the champion
+  // ML line above. Off by default and never in any consensus figure -- still
+  // being evaluated live. S.rec_ml_live_r165 is all-null on any bar scanned
+  // before the challenger existed; fillSteps/isNum already treat that as gaps.
+  if (showMlLiveR165 && S.rec_ml_live_r165) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live_r165)),color:COL.recM165,width:1.4,dash:[2,2]}); recLegend.push([COL.recM165,'ML (165d)']); }
   // Raw ML output: the signed model probability (Recommendation_SVM, already in [-1,1]),
   // BEFORE the smoothing/hysteresis the 'ML' line applies -- shown thin so the smoothed
   // line reads on top. Off by default (a diagnostic overlay).
@@ -2377,6 +2384,7 @@ function showTip(e,S,i){
       // still report a value in the hover panel.
       ['Rule',COL.recF, showRule ? fNum(S.rec_filtered&&S.rec_filtered[i],0) : '—'],
       ['ML',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
+      ['ML (165d)',COL.recM165, showMlLiveR165 ? fNum(S.rec_ml_live_r165&&S.rec_ml_live_r165[i],0) : '—'],
       // Raw ML: continuous signed P(buy) in [-1,1] -- 2 decimals (not 0 like the discrete lines).
       ['Raw ML',COL.recRaw, (showMlRaw && S.rec_ml_raw && isNum(S.rec_ml_raw[i])) ? S.rec_ml_raw[i].toFixed(2) : '—'],
       // Settled bars show the cut value; unsettled tail shows the look-ahead
@@ -2470,10 +2478,12 @@ export function initViewer(){
   const ruleEl = document.getElementById('chk-rule');
   const dpEl = document.getElementById('chk-dp');
   const mlLiveEl = document.getElementById('chk-mllive');
+  const mlLiveR165El = document.getElementById('chk-mllive-r165');
   const mlRawEl = document.getElementById('chk-mlraw');
   if (ruleEl) ruleEl.checked = showRule;
   if (dpEl) dpEl.checked = showDp;
   if (mlLiveEl) mlLiveEl.checked = showMlLive;
+  if (mlLiveR165El) mlLiveR165El.checked = showMlLiveR165;
   if (mlRawEl) mlRawEl.checked = showMlRaw;
 
   // Wire chart-type buttons
@@ -2505,11 +2515,12 @@ export function initViewer(){
   });
 
   // Wire recommendation-subplot checkboxes
-  ['chk-rule', 'chk-dp', 'chk-mllive', 'chk-mlraw'].forEach(id => {
+  ['chk-rule', 'chk-dp', 'chk-mllive', 'chk-mllive-r165', 'chk-mlraw'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', e => {
       if (id === 'chk-rule') showRule = e.target.checked;
       if (id === 'chk-dp') showDp = e.target.checked;
       if (id === 'chk-mllive') showMlLive = e.target.checked;
+      if (id === 'chk-mllive-r165') showMlLiveR165 = e.target.checked;
       if (id === 'chk-mlraw') showMlRaw = e.target.checked;
       saveChartPrefs();
       draw();

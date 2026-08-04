@@ -148,7 +148,6 @@ td a:hover{text-decoration:underline}
 .alloc-scheme-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 #alloc-scheme-sel{flex:1 1 200px;min-width:0;max-width:100%;background:var(--panel2);border:1px solid var(--card-border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:14px;font-family:inherit}
 #alloc-scheme-sel:focus{outline:none;border-color:var(--accent)}
-.alloc-research-badge{display:inline-block;margin-left:5px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;color:var(--warn);background:rgba(255,184,0,.15);vertical-align:middle}
 #alloc-meta{margin:0 0 8px}
 .alloc-totals{display:flex;gap:18px;flex-wrap:wrap;margin:10px 2px 4px;font-size:13px}
 .alloc-totals b{color:var(--text)}
