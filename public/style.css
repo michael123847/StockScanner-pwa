@@ -281,6 +281,8 @@ canvas{width:100%;display:block;touch-action:pan-y}
 #pf-toast.toast-err{background:rgba(255,92,92,.15);color:#ff5c5c;border:1px solid rgba(255,92,92,.3)}
 .pf-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
 .pf-table th{text-align:left;padding:6px 8px;color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--card-border)}
+.pf-table th.pf-sortable{cursor:pointer;user-select:none}
+.pf-table th.pf-sortable:hover{color:var(--text)}
 .pf-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}
 .pf-table td[contenteditable],.pf-table td span[contenteditable]{outline:none;cursor:text}
 .pf-table td[contenteditable]:focus,.pf-table td span[contenteditable]:focus{background:rgba(255,255,255,.05);border-radius:4px}

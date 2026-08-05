@@ -117,20 +117,120 @@ function toast(msg, ok) {
 }
 
 // ── Table ─────────────────────────────────────────────────────────────────
+// row-currency amount -> CHF equivalent. Exact inverse of toRowCcy() above:
+// that divides a CHF value by the <CCY>CHF rate to get the row-currency
+// amount; this multiplies a row-currency amount by the same rate to get
+// back to CHF, so the Exposure column can be sorted uniformly across
+// currencies. Mirrors toRowCcy's null/fallback conditions exactly.
+function toChf(amount, ccy) {
+  if (typeof amount !== 'number' || !isFinite(amount)) return null;
+  const c = (ccy || 'CHF').toUpperCase();
+  if (c === 'CHF') return amount;
+  if (!_todayFx) return null;
+  const r = _todayFx[c + 'CHF'];
+  if (c === 'BTC') {
+    const bu = _todayFx.BTCUSD, uc = _todayFx.USDCHF;
+    return (bu && uc) ? amount * bu * uc : null;
+  }
+  return (typeof r === 'number' && r !== 0) ? amount * r : null;
+}
+
+const SORT_COLS = [['ticker', 'Ticker'], ['name', 'Name'], ['exposure', 'Exposure']];
+let sortKey = 'ticker';
+let sortDir = 1;
+
+// Reads a live <tr> (as built by buildRow()) and returns a sortable value for
+// the given key. Exposure sorts by CHF-equivalent value: parsed from
+// dataset.csvValue (the save source of truth, same field collectRows() uses)
+// converted via toChf(), falling back to the raw un-converted number when fx
+// isn't available yet -- consistent with the rest of the file's graceful
+// degradation when _todayFx hasn't loaded.
+function rowSortVal(tr, key) {
+  if (key === 'ticker') return (tr.querySelector('[data-field=ticker]')?.textContent || '').trim().toLowerCase();
+  if (key === 'name')   return (tr.querySelector('[data-field=name]')?.textContent   || '').trim().toLowerCase();
+  if (key === 'exposure') {
+    const expEl = tr.querySelector('[data-field=exposure]');
+    const raw = expEl ? parseFloat(expEl.dataset.csvValue) : NaN;
+    if (!isFinite(raw)) return null;
+    const ccy = tr.querySelector('[data-field=currency]')?.textContent.trim() || '';
+    const chf = toChf(raw, ccy);
+    return chf != null ? chf : raw;
+  }
+  return null;
+}
+
+// Reorders the EXISTING <tr> nodes in place (tbody.append() on already-child
+// nodes just moves them) rather than rebuilding rows from data, so any
+// in-progress contentEditable edit survives a sort. Nulls (unparsable
+// exposure) always sort last, regardless of direction.
+function sortRows(tbody) {
+  tbody = tbody || $body?.querySelector('.pf-table tbody');
+  if (!tbody) return;
+  const rows = [...tbody.querySelectorAll('tr')];
+  rows.sort((a, b) => {
+    const x = rowSortVal(a, sortKey), y = rowSortVal(b, sortKey);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    if (typeof x === 'string' || typeof y === 'string') {
+      return sortDir * (String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0));
+    }
+    return sortDir * (x - y);
+  });
+  tbody.append(...rows);
+}
+
+// Rebuilds just the <thead> row -- cheap and holds no user data, unlike the
+// body rows sortRows() carefully preserves. Click toggles direction on the
+// active column or switches column (ascending first), matching viewer.js's
+// renderHead()/th.onclick convention.
+function renderTableHead(thead, tbody) {
+  const tr = document.createElement('tr');
+  SORT_COLS.forEach(([key, label]) => {
+    const th = document.createElement('th');
+    th.className = 'pf-sortable';
+    th.textContent = label + (sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : '');
+    th.addEventListener('click', () => {
+      if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+      renderTableHead(thead, tbody);
+      sortRows(tbody);
+    });
+    tr.appendChild(th);
+  });
+  ['Ccy', '', ''].forEach(label => {
+    const th = document.createElement('th');
+    th.textContent = label;
+    tr.appendChild(th);
+  });
+  thead.innerHTML = '';
+  thead.appendChild(tr);
+}
+
 function buildTable(entries) {
   const tbl = document.createElement('table');
   tbl.className = 'pf-table';
-  tbl.innerHTML = '<thead><tr><th>Ticker</th><th>Name</th><th>Exposure</th><th>Ccy</th><th></th><th></th></tr></thead>';
+  const thead = document.createElement('thead');
+  tbl.appendChild(thead);
   const tbody = document.createElement('tbody');
   entries.forEach(e => tbody.appendChild(buildRow(e)));
   tbl.appendChild(tbody);
+  renderTableHead(thead, tbody);
+  sortRows(tbody);
   return tbl;
 }
 
-function buildRow({ ticker = '', name = '', exposure = '', currency = '', isin = '', 'as of': asOf = '' } = {}) {
+function buildRow({ ticker = '', name = '', country = '', exposure = '', currency = '', proxy = '', proxy_currency = '', isin = '', 'as of': asOf = '' } = {}) {
   const tr = document.createElement('tr');
   // Store original as-of so collectRows can preserve it when exposure is unchanged
   tr.dataset.asOf = asOf || '';
+  // No editable UI for these four -- stash them on the DOM node so
+  // collectRows() can round-trip them on every save (see load()'s comment;
+  // isin's read-only sub-line below is a separate, display-only use of the
+  // same value).
+  tr.dataset.country       = country || '';
+  tr.dataset.proxy         = proxy || '';
+  tr.dataset.proxyCurrency = proxy_currency || '';
+  tr.dataset.isin          = isin || '';
 
   const tickerTd = document.createElement('td');
   tickerTd.contentEditable = 'true';
@@ -140,8 +240,9 @@ function buildRow({ ticker = '', name = '', exposure = '', currency = '', isin =
   tr.appendChild(tickerTd);
 
   // Name — editable span + a read-only ISIN sub-line (tap to copy) when the
-  // CSV row carries one. isin is display-only: it's never read back by
-  // collectRows()/save(), so it can't be corrupted by editing the name.
+  // CSV row carries one. The sub-line itself is display-only; the ISIN value
+  // is separately stashed on tr.dataset above and round-tripped by
+  // collectRows(), so it can't be corrupted by editing the name.
   const nameTd = document.createElement('td');
   const nameSpan = document.createElement('span');
   nameSpan.contentEditable = 'true';
@@ -387,7 +488,16 @@ function collectRows() {
            : (expEl && expEl.dataset.changed) ? today
            : (tr.dataset.asOf || today);
     }
-    return { ticker, name, exposure, currency, 'as of': asOf };
+    // country/proxy/proxy_currency/isin have no editable UI -- read back from
+    // tr.dataset (stashed by buildRow()) so a save that only touches OTHER
+    // rows can't silently scrub these columns from this one.
+    return {
+      ticker, name, exposure, currency, 'as of': asOf,
+      country:        tr.dataset.country || '',
+      proxy:          tr.dataset.proxy || '',
+      proxy_currency: tr.dataset.proxyCurrency || '',
+      isin:           tr.dataset.isin || '',
+    };
   }).filter(e => e.ticker);
 }
 
@@ -499,17 +609,20 @@ async function load(list) {
     // Normalize keys to lowercase so CSV rows with capitalized headers
     // (Ticker, Name, Exposure, Currency, as of) map correctly to buildRow.
     const _lc = o => Object.fromEntries(Object.entries(o).map(([k, v]) => [k.toLowerCase(), v]));
-    // isin round-trips through pandas/JSON as the literal string "nan" when
-    // unset (existing backend quirk) -- filter that out here so buildRow()
-    // only ever sees a real ISIN or ''.
+    // isin/proxy round-trip through pandas/JSON as the literal string "nan"
+    // when unset (existing backend quirk) -- filter that out here so
+    // buildRow() only ever sees a real value or ''.
     const isIsinCol = v => v && String(v).toLowerCase() !== 'nan';
     const entries = (await r.json()).map(e => { const n = _lc(e); return {
-      ticker:   n.ticker   || '',
-      name:     n.name     || '',
-      exposure: n.exposure != null ? n.exposure : '',
-      currency: n.currency || '',
-      isin:     isIsinCol(n.isin) ? n.isin : '',
-      'as of':  n['as of'] || '',
+      ticker:         n.ticker   || '',
+      name:           n.name     || '',
+      country:        n.country  || '',
+      exposure:       n.exposure != null ? n.exposure : '',
+      currency:       n.currency || '',
+      proxy:          isIsinCol(n.proxy) ? n.proxy : '',
+      proxy_currency: n.proxy_currency || '',
+      isin:           isIsinCol(n.isin) ? n.isin : '',
+      'as of':        n['as of'] || '',
     }; });
     // Today's values before buildTable, so buildRow can render them directly.
     // Non-fatal by construction: on any failure the map stays empty and rows
