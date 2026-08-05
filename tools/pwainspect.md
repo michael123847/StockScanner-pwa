@@ -76,10 +76,32 @@ node tools/inspect_pwa.mjs --mobile --tab=Digest --eval="(() => {
 
 Anything with `x >= innerWidth` is unreachable; any wrapper where
 `scrollWidth - clientWidth > 0` without `overflow-x: auto` is a clipped-content
-bug.
+bug. **This test is not sound for sub-pixel overflow** — see the gotcha below;
+a positive difference is real clipping, but a `0` difference is not proof of
+no clipping.
 
 ### Gotchas (hard-won)
 
+- **A multi-line `--eval` value is dropped entirely, SILENTLY.** The CLI arg
+  regex (`/^--([^=]+)(?:=(.*))?$/`) has no `s` (dotAll) flag, so `.*` cannot
+  match across a `\n` inside the value. A multi-line JS snippet after `--eval=`
+  makes the whole regex fail to match; the parser then falls back to treating
+  the entire raw multi-line string as an unrecognized bare flag, so
+  `args.eval` is never set. There is no error for this — no `eval result`
+  line AND no `eval error` line, just silence, because the `if (args.eval)`
+  block is skipped entirely. Always write `--eval` as **one line** (an IIFE
+  works fine on one line; use `;` instead of newlines between statements if
+  needed).
+- **`scrollWidth > clientWidth` misses sub-pixel clipping.** Both are reported
+  as *rounded* integer pixels, so 56.3px of text in a 56px box reports
+  `56 === 56` (no overflow detected) while the text is visibly ellipsising.
+  This directly contradicts the layout-forensics guidance above — treat
+  `scrollWidth - clientWidth > 0` as sufficient evidence of clipping, but
+  **not** its absence as evidence of no clipping. To actually measure text
+  that might be sub-pixel-clipped, build a hidden probe `<span>` styled with
+  the target element's *computed* font (family/size/weight/letter-spacing),
+  fill it with the same text, measure `getBoundingClientRect().width`, and
+  compare that to the container's `clientWidth` directly.
 - **`--click` matches `<button>`/`.btn` only.** Table rows aren't buttons — use
   `--toggle="<css>"` (raw CSS selector click) to open a row.
 - **The row-sheet only opens in compact/mobile table mode** (`renderCompact`
