@@ -1838,7 +1838,15 @@ const ALLOC_COLS = [
 // headline metrics (docs/ALLOCATION_STATUS.md; producer emits them statically,
 // see scripts/alloc_live.py HYBRID_METRICS/SCHEME5_METRICS).
 function metricsBoxHtml(m){
-  if(!m) return '';
+  // Rendered for EVERY scheme, never silently omitted -- a scheme with no
+  // backtest (Cash-Out 24m: liability-driven glide path, not a graded
+  // strategy) must say so explicitly rather than leaving a blank gap that
+  // reads as "the numbers failed to load" instead of "there are none by
+  // design". Keeps every scheme card's vertical rhythm identical: label ->
+  // metrics-or-placeholder -> table -> totals -> hints, always in that order.
+  if(!m) return `<div class="alloc-totals alloc-metrics alloc-metrics-none">
+    <span>Kein Backtest — kein separates Alpha-Schema</span>
+  </div>`;
   const cagr   = isNum(m.cagr_pct)  ? fPct(m.cagr_pct/100)  : '—';
   const maxdd  = isNum(m.maxdd_pct) ? fPct(m.maxdd_pct/100) : '—';
   const sharpe = isNum(m.sharpe)    ? m.sharpe.toFixed(2)   : '—';
@@ -1852,6 +1860,26 @@ function metricsBoxHtml(m){
     <span>Sharpe <b>${sharpe}</b></span>
     ${period}
   </div>`;
+}
+
+// Shared hint/caveats block for every scheme card -- assembled from whatever
+// fields a given scheme's block actually carries (derisk_rule is scheme5-
+// specific, cash_destination/note/caveats vary too), so schemes that used to
+// go through two different hand-written hint blocks (renderHybridHtml's own
+// inline version vs scheme5's own inline version in renderAllocation) now
+// render through ONE function -- same order, same markup, same styling,
+// regardless of which fields a particular scheme happens to have. The static
+// "Per-Ticker-Evidenz" hint applies to every scheme (sleeves are real tickers
+// too), so it's no longer scheme5-exclusive-by-omission.
+function schemeHintsHtml(block){
+  if(!block) return '';
+  const hints = [block.derisk_rule, block.cash_destination, block.note].filter(Boolean);
+  const hintsHtml = hints.map(h=>`<p class="hint alloc-hint">${esc(h)}</p>`).join('');
+  const caveats = Array.isArray(block.caveats) ? block.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
+  const caveatsHtml = caveats ? `<ul class="alloc-caveats">${caveats}</ul>` : '';
+  return `${hintsHtml}${caveatsHtml}
+    <p class="hint alloc-hint">Per-Ticker-Evidenz (CAGR/Sharpe vs. Buy&amp;Hold, MaxDD) für jede
+      Position: Übersicht → Spalten-Profil <b>Backtest</b>.</p>`;
 }
 
 // Builds the "real money" hybrid table (small, separate <table> — not #alloc-tbl) as an HTML string.
@@ -1888,10 +1916,7 @@ function renderHybridHtml(h){
       <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt (SARON)</span>
       <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band</span>
     </div>
-    ${h.cash_destination?`<p class="hint alloc-hint">${esc(h.cash_destination)}</p>`:''}
-    ${h.note?`<p class="hint alloc-hint">${esc(h.note)}</p>`:''}
-    <p class="hint alloc-hint">Per-Ticker-Evidenz (CAGR/Sharpe vs. Buy&amp;Hold, MaxDD) für jede
-      Position: Übersicht → Spalten-Profil <b>Backtest</b>.</p>
+    ${schemeHintsHtml(h)}
   `;
 }
 
@@ -1944,6 +1969,14 @@ export function renderAllocation(){
     if(positionsBlock){
       hybridEl.style.display='';
       hybridEl.innerHTML = renderHybridHtml(positionsBlock);
+    } else if(scheme==='scheme5' && block){
+      // scheme5's own table lives in #alloc-tbl below (different shape: sleeves,
+      // not positions), but the metrics box is identical machinery to every
+      // other scheme's -- reuse the same DOM slot so its CAGR/MaxDD/Sharpe
+      // sits in the exact same place, same markup, as Tech Heavy's (this used
+      // to be silently skipped for scheme5 even though block.metrics exists).
+      hybridEl.style.display='';
+      hybridEl.innerHTML = metricsBoxHtml(block.metrics);
     } else {
       hybridEl.style.display='none';
       hybridEl.innerHTML='';
@@ -1981,21 +2014,19 @@ export function renderAllocation(){
   }
 
   if(footEl){
-    if(scheme==='scheme5'){
+    if(scheme==='scheme5' && block){
       footEl.style.display='';
-      const caveats = Array.isArray(block && block.caveats) ? block.caveats.map(c=>`<li>${esc(c)}</li>`).join('') : '';
       footEl.innerHTML = `
         <div class="alloc-totals">
           <span><b>${fPct(((block && block.in_1x_twins_pct)||0)/100)}</b> in 1× Twins</span>
           <span><b>${fPct(((block && block.cash_money_market_pct)||0)/100)}</b> CHF Geldmarkt</span>
         </div>
-        <p class="hint alloc-hint">${esc((block && block.derisk_rule)||'')}</p>
-        <p class="hint alloc-hint">${esc((block && block.cash_destination)||'')}</p>
-        ${caveats?`<ul class="alloc-caveats">${caveats}</ul>`:''}
+        ${schemeHintsHtml(block)}
       `;
     } else {
-      // hybrid/techheavy: their own note+metrics are already inside
-      // renderHybridHtml (hybridEl above) -- nothing scheme5-specific to add here.
+      // hybrid/techheavy/techcrypto/cashout: their own totals+hints are already
+      // inside renderHybridHtml (hybridEl above, via the same schemeHintsHtml
+      // this branch uses) -- nothing scheme5-specific left to add here.
       footEl.style.display='none';
       footEl.innerHTML='';
     }
