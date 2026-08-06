@@ -136,8 +136,18 @@ function toChf(amount, ccy) {
 }
 
 const SORT_COLS = [['ticker', 'Ticker'], ['name', 'Name'], ['exposure', 'Exposure']];
-let sortKey = 'ticker';
+// null = no sort applied yet -- table displays in original CSV/load order and
+// no header shows an arrow. Sorting is a VIEW-ONLY concern: it reorders these
+// <tr> nodes for display, but collectRows() always saves by dataset.origIndex
+// (see buildRow/buildTable below), so it is completely unaffected by this.
+let sortKey = null;
 let sortDir = 1;
+// Original-position counter for the save order (dataset.origIndex on each
+// <tr>, stamped by buildRow()). buildTable() resets this to the entries
+// length after stamping a full load, so rows added afterwards (+ Zeile,
+// search) get the next free index and are appended at the end of a save,
+// in the order they were added -- they have no original CSV position.
+let _nextOrigIndex = 0;
 
 // Reads a live <tr> (as built by buildRow()) and returns a sortable value for
 // the given key. Exposure sorts by CHF-equivalent value: parsed from
@@ -164,6 +174,7 @@ function rowSortVal(tr, key) {
 // in-progress contentEditable edit survives a sort. Nulls (unparsable
 // exposure) always sort last, regardless of direction.
 function sortRows(tbody) {
+  if (!sortKey) return; // no sort active -- leave rows in their current (load/insert) order
   tbody = tbody || $body?.querySelector('.pf-table tbody');
   if (!tbody) return;
   const rows = [...tbody.querySelectorAll('tr')];
@@ -212,15 +223,26 @@ function buildTable(entries) {
   const thead = document.createElement('thead');
   tbl.appendChild(thead);
   const tbody = document.createElement('tbody');
-  entries.forEach(e => tbody.appendChild(buildRow(e)));
+  // Full rebuild from a known entries list -- this IS the original load/save
+  // order, so reset the origIndex counter and stamp it 0..n-1 here. Any row
+  // added later via buildRow() outside this loop (+ Zeile, search) falls
+  // through to _nextOrigIndex++ and lands after these.
+  _nextOrigIndex = 0;
+  entries.forEach(e => tbody.appendChild(buildRow(e, _nextOrigIndex++)));
   tbl.appendChild(tbody);
   renderTableHead(thead, tbody);
   sortRows(tbody);
   return tbl;
 }
 
-function buildRow({ ticker = '', name = '', country = '', exposure = '', currency = '', proxy = '', proxy_currency = '', isin = '', 'as of': asOf = '' } = {}) {
+function buildRow({ ticker = '', name = '', country = '', exposure = '', currency = '', proxy = '', proxy_currency = '', isin = '', 'as of': asOf = '' } = {}, origIndex) {
   const tr = document.createElement('tr');
+  // Original save-order position -- collectRows() sorts on this, NOT DOM
+  // order, so a view sort never affects what gets written to the CSV. Rows
+  // built outside buildTable's entries loop (+ Zeile, search results) have no
+  // original CSV position, so they default to the next free slot, appending
+  // them after everything already loaded, in the order they were added.
+  tr.dataset.origIndex = origIndex != null ? origIndex : _nextOrigIndex++;
   // Store original as-of so collectRows can preserve it when exposure is unchanged
   tr.dataset.asOf = asOf || '';
   // No editable UI for these four -- stash them on the DOM node so
@@ -464,7 +486,13 @@ function showEditPopup(tr) {
 function collectRows() {
   if (!$body) return [];
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  return [...$body.querySelectorAll('.pf-table tbody tr')].map(tr => {
+  // Sort by dataset.origIndex (the CSV load order, stamped in buildRow()),
+  // NOT DOM order -- the DOM order reflects the current VIEW sort, which
+  // must never leak into what gets saved. Deleted rows simply aren't in the
+  // NodeList any more, so the remaining rows concatenate with no gap.
+  return [...$body.querySelectorAll('.pf-table tbody tr')]
+    .sort((a, b) => (Number(a.dataset.origIndex) || 0) - (Number(b.dataset.origIndex) || 0))
+    .map(tr => {
     const ticker   = tr.querySelector('[data-field=ticker]')?.textContent.trim() || '';
     const name     = tr.querySelector('[data-field=name]')?.textContent.trim()   || '';
     const expEl    = tr.querySelector('[data-field=exposure]');
