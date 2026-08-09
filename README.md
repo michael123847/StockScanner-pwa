@@ -25,13 +25,16 @@ Caddy :8443  ──/api/stocks/*──▶  127.0.0.1:3001  (companion server)
 - `src/auth.js` — a single shared Bearer token kept in `localStorage` (entered once via the gear menu).
 - `src/viewer.js` — the table + canvas-chart engine lifted from `StockScanner/viewer.html`, fed from
   `/api/stocks/index` + `/api/stocks/report`. Also renders:
-  - the **Allokation** sub-tab: a scheme picker (real-money hybrid + the `#5 Sharpshooter`,
-    `Tech Heavy`, and liability-driven `Cash-Out 24m` research schemes — dropdown labels are
-    data-driven `short_label`s from the allocation JSON, with a **Research** badge on staged
-    schemes), portfolio-wide trade recommendations (Jetzt/Ziel/Trade columns appear from ~700 px
-    up; narrow phones keep Position/Order and one tap opens the detail sheet), and a combined
-    **deposit / withdrawal planner** — a positive "Neue Einzahlung" says where new cash should go,
-    a negative amount plans **withdrawal sells** out of each leg's excess over its target.
+  - the **Allokation** sub-tab: a scheme picker whose entire option list and labelling is
+    data-driven — populated at runtime from the allocation JSON's `schemes` map (key →
+    `short_label`), with no scheme names or weights hard-coded in the PWA. Each scheme block
+    carries a `kind` (`positions` or `sleeves`) that the renderer branches on instead of any
+    literal scheme identifier, so the PWA never needs a code change when a scheme is added,
+    renamed, or removed on the backend. It also renders portfolio-wide trade recommendations
+    (Jetzt/Ziel/Trade columns appear from ~700 px up; narrow phones keep Position/Order and one
+    tap opens the detail sheet), and a combined **deposit / withdrawal planner** — a positive
+    "Neue Einzahlung" says where new cash should go, a negative amount plans **withdrawal sells**
+    out of each leg's excess over its target.
   - the per-signal order-execution hint (green buy / red sell) in the Übersicht "Order" column and
     the row-sheet popup, plus each holding's **ISIN** (copyable) and price **proxy** ("Kurs via …")
     surfaced in the row detail sheet and the Portfolio editor.

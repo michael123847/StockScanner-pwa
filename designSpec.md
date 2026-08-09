@@ -22,9 +22,11 @@ cached 30s, abort after `HEALTH_TIMEOUT_MS` (1500ms).
 
 Two sub-tabs (`#digest-subtab-bar`): **Digest** (`digest_latest.txt`, plain text, "Aktualisieren"
 button) and **Allokation** (portfolio-wide, not tied to any report/list):
-- A scheme dropdown (`#alloc-scheme-sel`) selects **Hybrid 55/15/15/15** (shipped, real-money) or
-  **#5 Sharpshooter** (staged research target) — only these two have live per-sleeve weight data.
-  Selecting one shows only that scheme's table + metrics; switching hides the other.
+- A scheme dropdown (`#alloc-scheme-sel`) is populated at runtime from the allocation JSON's
+  `schemes` map (key → `short_label`) — no scheme names, count, or weights are hard-coded in the
+  PWA. Each scheme block carries a `kind` (`positions`, a flat weighted list, or `sleeves`, the
+  risk-parity ladder view) that the renderer branches on. Selecting one shows only that scheme's
+  table + metrics; switching hides the other.
 - Below the table: **recommended trades** to transform the *entire* current portfolio
   (`Input/Portfolio.csv` total value) into the selected scheme's target weights. Holdings outside
   the scheme are full sells; scheme instruments not yet held are full buys from cash. Uses each

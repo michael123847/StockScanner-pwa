@@ -98,26 +98,33 @@ function retryAllocationIfMissing(){
   }
 }
 
-// The <option value> keys in index.html's scheme dropdown are stable, but
-// their hard-coded TEXT drifts whenever a producer's --*-fund weights change
-// its label (same sickness the alloc-meta header above already guards
-// against via schemeLabel). Rewrite each option's text from the same JSON
-// once it resolves; the hard-coded text stays as the fallback for the
-// not-yet-loaded state.
-function updateSchemeDropdownLabels(a){
+// index.html ships the scheme <select> empty -- there is no hard-coded set of
+// scheme keys/labels in the PWA, only the shape of the payload. Build the
+// <option> list straight from allocationData.schemes (key -> short_label,
+// falling back to the key itself if absent), so a scheme added/renamed/
+// removed on the backend just shows up here with no PWA change. Preserves
+// the current selection across re-population (e.g. a later refetch).
+function populateSchemeDropdown(a){
   const sel = $('#alloc-scheme-sel');
   if(!sel || !a) return;
   const schemes = a.schemes || {};
-  const labelsByValue = {
-    hybrid:    schemes.hybrid && (schemes.hybrid.short_label || schemes.hybrid.label),
-    scheme5:   schemes.scheme5 && (schemes.scheme5.short_label || schemes.scheme5.label),
-    techheavy: schemes.techheavy && (schemes.techheavy.short_label || schemes.techheavy.label),
-    cashout:   schemes.cashout && (schemes.cashout.short_label || schemes.cashout.label),
-  };
-  for(const opt of sel.options){
-    const label = labelsByValue[opt.value];
-    if(label) opt.textContent = label;
+  const prevValue = sel.value;
+  sel.innerHTML = '';
+  for(const key of Object.keys(schemes)){
+    const block = schemes[key];
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = (block && (block.short_label || block.label)) || key;
+    sel.appendChild(opt);
   }
+  if(prevValue && schemes[prevValue]) sel.value = prevValue;
+}
+
+// First scheme key in the payload -- used as the dropdown's implicit default
+// wherever no explicit selection exists yet, instead of a hard-coded scheme name.
+function firstSchemeKey(a){
+  const schemes = (a && a.schemes) || {};
+  return Object.keys(schemes)[0] || null;
 }
 
 // Normalizes a legacy pre-`schemes`-wrapper payload (scheme5's fields at the
@@ -152,7 +159,7 @@ export async function ensureAllocation(){
   try{
     const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
     allocationData = normalizeAllocationPayload(await apiJson(url));
-    updateSchemeDropdownLabels(allocationData);
+    populateSchemeDropdown(allocationData);
     // Default the dropdown to whatever the user has marked "Aktiv" (see
     // getActiveScheme) rather than always opening on the first <option>
     // (hybrid) -- this only runs once (allocationTried guards the whole
@@ -216,7 +223,7 @@ async function ensurePortfolioHoldings(){
   return portfolioHoldingsData;
 }
 
-// Scheme-side identity ticker (e.g. an ISIN like 'CH0032831981') -> the
+// Scheme-side identity ticker (e.g. an ISIN-shaped identifier) -> the
 // ticker actually used in Input/Portfolio.csv, read live from each holding's
 // 'isin' column (input/Portfolio.csv) via the report JSON's holding.isin
 // field (main.py/scanner/report.py). Rebuilt from the latest
@@ -322,7 +329,8 @@ function buildSchemeTargets(schemeKey){
     const {ticker: tk, viaProxy, viaEquivalent} = resolveAliasedTicker(originalTk, proxyMap, isinMap, equivalents, heldSet);
     // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
     // one -- resolveAliasedTicker() maps it to whatever ticker Portfolio.csv holds
-    // it under for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
+    // it under for matching purposes (e.g. an ISIN-shaped identifier -> its held
+    // ticker alias), which would
     // otherwise erase the ISIN from the row entirely. schemeTicker is the same idea
     // for the disclosure sub-line: only set when the match came from proxy/equivalents
     // (a real substitution), used to tell the user which scheme leg a held instrument
@@ -349,7 +357,7 @@ function buildSchemeTargets(schemeKey){
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
     cashIsin = positionsBlock.cash_isin || null;
-  } else if(schemeKey === 'scheme5'){
+  } else if(block.kind === 'sleeves'){
     cashIsin = block.cash_isin || null;
     for(const s of (block.sleeves||[])){
       // The primary ticker's own metadata carries the twin reference (per the
@@ -391,10 +399,10 @@ const isIsin = (tk) => ISIN_RE.test(tk||'');
 // stable reason code into the UI's German text.
 const ORDER_HINT_REASON_DE = {
   breakout_upper:     () => 'Market — Ausbruch über oberes Band',
-  pullback_support:   price => `Limit @ ${price.toFixed(2)} — Rücksetzer-Kauf`,
+  pullback_support:   (price, ccy) => `Limit @ ${price.toFixed(2)}${ccy ? ' ' + ccy : ''} — Rücksetzer-Kauf`,
   no_support:         () => 'Market — kein Support unter Kurs',
   breakdown_lower:    () => 'Market — Ausbruch unter unteres Band',
-  sell_into_strength: price => `Limit @ ${price.toFixed(2)} — Verkauf in Stärke`,
+  sell_into_strength: (price, ccy) => `Limit @ ${price.toFixed(2)}${ccy ? ' ' + ccy : ''} — Verkauf in Stärke`,
   no_resistance:      () => 'Market — kein Widerstand über Kurs',
   ml_off_exit:        () => 'Market — ML-Off-Exit (De-Risk-Verkäufe nie per Limit)',
 };
@@ -402,13 +410,18 @@ const ORDER_HINT_REASON_DE = {
 // hint is report.order_hints[direction] ({type, price, reason}) for a held
 // ticker, or null when no order_hints are available (a stale pre-upgrade
 // report, or a scheme leg with no matching Portfolio.csv holding) -- shown as
-// a placeholder rather than recomputed from scheme-side data.
-function localizeOrderHint(hint, direction){
+// a placeholder rather than recomputed from scheme-side data. *currency* is
+// the ticker's report.price_currency (native price currency -- 'GBp' pence
+// for .L tickers, verbatim, never normalised -- see scanner/report.py);
+// absent on older/cached reports, in which case the price renders unlabelled
+// rather than as "undefined".
+function localizeOrderHint(hint, direction, currency){
   if(!hint) {
-    return {type:'market', price:null,
+    return {type:'market', price:null, currency: currency || null,
       rationale: direction==='buy' ? 'Market — neue Position, keine Kursdaten' : 'Market — keine Kursdaten'};
   }
-  return {type: hint.type, price: hint.price, rationale: ORDER_HINT_REASON_DE[hint.reason](hint.price)};
+  return {type: hint.type, price: hint.price, currency: currency || null,
+    rationale: ORDER_HINT_REASON_DE[hint.reason](hint.price, currency)};
 }
 
 // Recommended trades to move the WHOLE current portfolio (Input/Portfolio.csv,
@@ -441,7 +454,8 @@ function computeSchemeTrades(schemeKey){
     // instrument gets, not a placeholder.
     if(v > 0){
       const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
-      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal,
+        orderHints: t.order_hints||null, priceCurrency: t.price_currency||null});
       total += v;
     }
   }
@@ -477,14 +491,14 @@ function computeSchemeTrades(schemeKey){
       const dir = trade > 0 ? 'buy' : 'sell';
       const hint = held && held.orderHints ? held.orderHints[dir] : null;
       rows.push({ticker: tk, name: (held||{}).name || name, targetVal, curVal, trade,
-        meta: rowMeta, orderHint: localizeOrderHint(hint, dir)});
+        meta: rowMeta, orderHint: localizeOrderHint(hint, dir, held && held.priceCurrency)});
     }
   }
   const cashTarget = total * built.cashPct / 100;
   if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null, isin: built.cashIsin});
-  for(const [tk, {value, name, levels, ml_signal, orderHints}] of byTicker){
+  for(const [tk, {value, name, levels, ml_signal, orderHints, priceCurrency}] of byTicker){
     if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
-      meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell')});
+      meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell', priceCurrency)});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
   return {total, rows, fx: holdings.fx, excludedHeld, band: built.band};
@@ -523,7 +537,8 @@ function computeAddCash(schemeKey, cashChf){
     if(exclude.has(t.ticker)) continue;
     if(v > 0){
       const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
-      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal,
+        orderHints: t.order_hints||null, priceCurrency: t.price_currency||null});
       currentTotal += v;
     }
   }
@@ -545,12 +560,12 @@ function computeAddCash(schemeKey, cashChf){
     const legMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
-      orderHints: (held||{}).orderHints || null,
+      orderHints: (held||{}).orderHints || null, priceCurrency: (held||{}).priceCurrency || null,
       shortfall: Math.max(0, targetVal - curVal)});
   }
   if(built.cashPct > 0){
     legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, meta: null,
-      orderHints: null, isin: built.cashIsin,
+      orderHints: null, priceCurrency: null, isin: built.cashIsin,
       shortfall: Math.max(0, newTotal * built.cashPct / 100)});
   }
 
@@ -560,11 +575,11 @@ function computeAddCash(schemeKey, cashChf){
     // No shortfalls at all (portfolio already at/above every target) — spread
     // the whole amount pro-rata by weight since there's nothing to "catch up".
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, isin: l.isin}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: cashChf * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency, isin: l.isin}));
   } else if(sumShortfall <= cashChf){
     const leftover = cashChf - sumShortfall;
     const sumPct = legs.reduce((s, l) => s + l.pct, 0) || 1;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, isin: l.isin}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: l.shortfall + leftover * l.pct / sumPct, meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency, isin: l.isin}));
   } else {
     // Greedy water-fill: pour the deposit into the largest absolute shortfall
     // first, spilling to the next leg only once the current one reaches target.
@@ -581,7 +596,7 @@ function computeAddCash(schemeKey, cashChf){
       if(remaining <= 0) break;
       const put = Math.min(l.shortfall, remaining);
       remaining -= put;
-      rows.push({ticker: l.ticker, name: l.name, amount: put, meta: l.meta, orderHints: l.orderHints, isin: l.isin});
+      rows.push({ticker: l.ticker, name: l.name, amount: put, meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency, isin: l.isin});
     }
   }
 
@@ -593,11 +608,11 @@ function computeAddCash(schemeKey, cashChf){
     // actionable (may slightly overshoot that one leg's target — self-corrects
     // at the next rebalance, preferable to showing "no trades").
     const top = legs.reduce((a, b) => b.shortfall > a.shortfall ? b : a);
-    rows = [{ticker: top.ticker, name: top.name, amount: cashChf, meta: top.meta, orderHints: top.orderHints, isin: top.isin}];
+    rows = [{ticker: top.ticker, name: top.name, amount: cashChf, meta: top.meta, orderHints: top.orderHints, priceCurrency: top.priceCurrency, isin: top.isin}];
   }
   rows.sort((x,y) => y.amount - x.amount);
   // Additive-only: every row is a buy by construction.
-  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.buy : null, 'buy'); });
+  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.buy : null, 'buy', r.priceCurrency); });
   return {cash: cashChf, rows, fx: holdings.fx};
 }
 
@@ -625,7 +640,8 @@ function computeWithdrawal(schemeKey, cashChf){
     if(exclude.has(t.ticker)) continue;
     if(v > 0){
       const ml_signal = t.panel && t.panel.ml_risk && t.panel.ml_risk.signal || null;
-      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal, orderHints: t.order_hints||null});
+      byTicker.set(t.ticker, {value: v, name: t.name, levels: t.levels||null, ml_signal,
+        orderHints: t.order_hints||null, priceCurrency: t.price_currency||null});
       currentTotal += v;
     }
   }
@@ -644,7 +660,7 @@ function computeWithdrawal(schemeKey, cashChf){
     const legMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
-      orderHints: (held||{}).orderHints || null,
+      orderHints: (held||{}).orderHints || null, priceCurrency: (held||{}).priceCurrency || null,
       excess: Math.max(0, curVal - targetVal)});
   }
 
@@ -655,17 +671,17 @@ function computeWithdrawal(schemeKey, cashChf){
   // holds regardless of which branch's algebra applies at the edges.
   let rows;
   if(sumExcess <= 0){
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency}));
   } else if(sumExcess <= W){
     const remainder = W - sumExcess;
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, l.excess + remainder * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, l.excess + remainder * l.pct / sumPct), meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency}));
   } else {
-    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.excess / sumExcess), meta: l.meta, orderHints: l.orderHints}));
+    rows = legs.map(l => ({ticker: l.ticker, name: l.name, amount: Math.min(l.curVal, W * l.excess / sumExcess), meta: l.meta, orderHints: l.orderHints, priceCurrency: l.priceCurrency}));
   }
 
   rows = rows.filter(r => r.amount > 0 && r.amount / W * 100 >= DUST_PCT && r.amount >= MIN_ORDER_CHF);
   rows.sort((x,y) => y.amount - x.amount);
-  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.sell : null, 'sell'); });
+  rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.sell : null, 'sell', r.priceCurrency); });
   rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', amount: W, meta: null, orderHints: null, orderHint: null, isin: built.cashIsin});
   return {cash: W, rows, fx: holdings.fx};
 }
@@ -684,7 +700,7 @@ function allocOrderCell(oh, dir){
   if(!oh) return '<span class="num">—</span>';
   const cls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
   const typeLabel = oh.type==='market' ? 'Market' : 'Limit';
-  const priceStr = oh.price!=null ? ` @ ${oh.price.toFixed(2)}` : '';
+  const priceStr = oh.price!=null ? ` @ ${oh.price.toFixed(2)}${oh.currency ? ' ' + oh.currency : ''}` : '';
   return `<span class="num ${cls}">${esc(typeLabel)}${priceStr}</span>`;
 }
 
@@ -862,8 +878,11 @@ function openTradeSheet(row, ctx){
     : (amountVal>0 ? 'Kaufen ' : 'Verkaufen ') + convertCHF(Math.abs(amountVal), currency, ctx.fx);
 
   const orderPriceStr = (oh && oh.price!=null) ? oh.price.toFixed(2) : null;
+  // copyBtnHtml gets the bare number only (for pasting into a broker order form);
+  // the currency suffix is display-only, appended after it.
+  const orderPriceCcy = (oh && oh.currency) ? ' ' + esc(oh.currency) : '';
   const orderTile = oh ? `<div class="rs-metric"><span class="rs-metric-label">Order</span>
-    <span class="rs-metric-value num ${ohCls}">${esc(oh.type==='market'?'Market':'Limit')}${orderPriceStr?(' @ '+orderPriceStr):''}
+    <span class="rs-metric-value num ${ohCls}">${esc(oh.type==='market'?'Market':'Limit')}${orderPriceStr?(' @ '+orderPriceStr+orderPriceCcy):''}
     ${orderPriceStr?copyBtnHtml(orderPriceStr):''}</span></div>` : '';
 
   sheet.innerHTML = `<div class="row-sheet-panel">
@@ -1219,7 +1238,11 @@ function orderCell(oh,r){
   const dir = orderDirection(r);
   const cls = dir==='buy' ? 'pos' : (dir==='sell' ? 'neg' : '');
   const typeLabel = oh.type==='market' ? 'Market' : 'Limit';
-  const priceStr = oh.price!=null ? ` @ ${oh.price}` : '';
+  // r.price_currency is the ticker's native price currency (report.py's
+  // price_currency field -- 'GBp' pence, verbatim, for .L tickers). oh (=
+  // r.order_hint) carries no currency of its own; absent on older/cached
+  // reports, in which case the price renders unlabelled rather than "undefined".
+  const priceStr = oh.price!=null ? ` @ ${oh.price}${r.price_currency ? ' ' + r.price_currency : ''}` : '';
   return `<span class="num ${cls}">${esc(typeLabel)}${priceStr}</span>`;
 }
 
@@ -1760,13 +1783,13 @@ function openRowSheet(ticker){
   // report) or the direction is ambiguous (no clear buy/sell signal, so
   // there's no defined "opposite" of the primary tile).
   const oppDir = orderDir==='buy' ? 'sell' : (orderDir==='sell' ? 'buy' : null);
-  const oppHint = (oppDir && r.order_hints) ? localizeOrderHint(r.order_hints[oppDir], oppDir) : null;
+  const oppHint = (oppDir && r.order_hints) ? localizeOrderHint(r.order_hints[oppDir], oppDir, r.price_currency) : null;
   const oppLabel = oppDir==='buy' ? 'Kauf-Limit' : 'Verkauf-Limit';
-  const oppHtml = oppHint ? `<div class="rs-metric"><span class="rs-metric-label">${esc(oppLabel)}</span><span class="rs-metric-value num ${oppDir==='buy'?'pos':'neg'}">${esc(oppHint.type==='market'?'Market':'Limit')}${oppHint.price!=null?(' @ '+oppHint.price):''}</span></div>` : '';
+  const oppHtml = oppHint ? `<div class="rs-metric"><span class="rs-metric-label">${esc(oppLabel)}</span><span class="rs-metric-value num ${oppDir==='buy'?'pos':'neg'}">${esc(oppHint.type==='market'?'Market':'Limit')}${oppHint.price!=null?(' @ '+oppHint.price+(oppHint.currency?(' '+oppHint.currency):'')):''}</span></div>` : '';
   const orderHtml = oh ? `<div class="row-sheet-section">
     <div class="row-sheet-section-label">Ordervorschlag</div>
     <div class="rs-metrics">
-      <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value num ${orderCls}">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price):''}</span></div>
+      <div class="rs-metric"><span class="rs-metric-label">Order</span><span class="rs-metric-value num ${orderCls}">${esc(oh.type==='market'?'Market':'Limit')}${oh.price!=null?(' @ '+oh.price+(r.price_currency?(' '+r.price_currency):'')):''}</span></div>
       ${oppHtml}
     </div>
     <div class="rs-order-rationale">${esc(oh.rationale||'')}</div>
@@ -1879,8 +1902,8 @@ const ALLOC_COLS = [
 // see scripts/alloc_live.py HYBRID_METRICS/SCHEME5_METRICS).
 function metricsBoxHtml(m){
   // Rendered for EVERY scheme, never silently omitted -- a scheme with no
-  // backtest (Cash-Out 24m: liability-driven glide path, not a graded
-  // strategy) must say so explicitly rather than leaving a blank gap that
+  // backtest (e.g. a liability-driven glide path, not a graded strategy)
+  // must say so explicitly rather than leaving a blank gap that
   // reads as "the numbers failed to load" instead of "there are none by
   // design". Keeps every scheme card's vertical rhythm identical: label ->
   // metrics-or-placeholder -> table -> totals -> hints, always in that order.
@@ -1977,7 +2000,7 @@ export function renderAllocation(){
   }
 
   if(schemeSel) schemeSel.style.display='';
-  const scheme = (schemeSel && schemeSel.value) || 'hybrid';
+  const scheme = (schemeSel && schemeSel.value) || firstSchemeKey(a);
   const block = a.schemes && a.schemes[scheme];
 
   if(metaEl){
@@ -2009,12 +2032,13 @@ export function renderAllocation(){
     if(positionsBlock){
       hybridEl.style.display='';
       hybridEl.innerHTML = renderHybridHtml(positionsBlock);
-    } else if(scheme==='scheme5' && block){
-      // scheme5's own table lives in #alloc-tbl below (different shape: sleeves,
-      // not positions), but the metrics box is identical machinery to every
-      // other scheme's -- reuse the same DOM slot so its CAGR/MaxDD/Sharpe
-      // sits in the exact same place, same markup, as Tech Heavy's (this used
-      // to be silently skipped for scheme5 even though block.metrics exists).
+    } else if(block && block.kind === 'sleeves'){
+      // A sleeves-shaped scheme's own table lives in #alloc-tbl below
+      // (different shape: sleeves, not positions), but the metrics box is
+      // identical machinery to every other scheme's -- reuse the same DOM
+      // slot so its CAGR/MaxDD/Sharpe sits in the exact same place, same
+      // markup, as a positions-shaped scheme's (this used to be silently
+      // skipped even though block.metrics exists).
       hybridEl.style.display='';
       hybridEl.innerHTML = metricsBoxHtml(block.metrics);
     } else {
@@ -2023,8 +2047,9 @@ export function renderAllocation(){
     }
   }
 
-  if(tbl) tbl.style.display = scheme==='scheme5' ? '' : 'none';
-  if(scheme==='scheme5'){
+  const isSleeves = block && block.kind === 'sleeves';
+  if(tbl) tbl.style.display = isSleeves ? '' : 'none';
+  if(isSleeves){
     const tr=document.createElement('tr');
     ALLOC_COLS.forEach(([label])=>{ const th=document.createElement('th'); th.textContent=label; tr.appendChild(th); });
     const thead=$('#alloc-tbl thead'); thead.innerHTML=''; thead.appendChild(tr);
@@ -2054,7 +2079,7 @@ export function renderAllocation(){
   }
 
   if(footEl){
-    if(scheme==='scheme5' && block){
+    if(isSleeves && block){
       footEl.style.display='';
       footEl.innerHTML = `
         <div class="alloc-totals">
@@ -2064,9 +2089,9 @@ export function renderAllocation(){
         ${schemeHintsHtml(block)}
       `;
     } else {
-      // hybrid/techheavy/techcrypto/cashout: their own totals+hints are already
-      // inside renderHybridHtml (hybridEl above, via the same schemeHintsHtml
-      // this branch uses) -- nothing scheme5-specific left to add here.
+      // Positions-shaped schemes: their own totals+hints are already inside
+      // renderHybridHtml (hybridEl above, via the same schemeHintsHtml this
+      // branch uses) -- nothing sleeves-specific left to add here.
       footEl.style.display='none';
       footEl.innerHTML='';
     }
@@ -2107,7 +2132,7 @@ function renderAddCash(){
   // a comma decimal separator and CH thousands apostrophes/spaces.
   const typed = Number(raw.replace(/[’'\s]/g, '').replace(',', '.'));
   if(!isNum(typed) || typed === 0){ out.innerHTML=''; return; }
-  const scheme = (schemeSel && schemeSel.value) || 'hybrid';
+  const scheme = (schemeSel && schemeSel.value) || firstSchemeKey(allocationData);
   // Negative amount = withdrawal (computeWithdrawal), positive = add-cash
   // (computeAddCash) -- same input, same debounced trigger, opposite flow.
   const isWithdrawal = typed < 0;
@@ -2513,7 +2538,7 @@ export function initViewer(){
   const activateBtn = $('#alloc-activate-btn');
   if(activateBtn){
     activateBtn.addEventListener('click', () => {
-      const cur = ($('#alloc-scheme-sel')||{}).value || 'hybrid';
+      const cur = ($('#alloc-scheme-sel')||{}).value || firstSchemeKey(allocationData);
       setActiveScheme(cur);
       if(allocationData) renderAllocation();
     });

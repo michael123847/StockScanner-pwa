@@ -150,21 +150,34 @@ let sortDir = 1;
 let _nextOrigIndex = 0;
 
 // Reads a live <tr> (as built by buildRow()) and returns a sortable value for
-// the given key. Exposure sorts by CHF-equivalent value: parsed from
-// dataset.csvValue (the save source of truth, same field collectRows() uses)
-// converted via toChf(), falling back to the raw un-converted number when fx
-// isn't available yet -- consistent with the rest of the file's graceful
-// degradation when _todayFx hasn't loaded.
+// the given key. The invariant: the exposure sort key is always the
+// CHF-equivalent of whatever that cell is CURRENTLY DISPLAYING (buildRow()/
+// the edit popup's confirm() decide what that is), not always the stored
+// CSV basis -- otherwise the visible order and the sort order disagree.
+// Priority order:
+//   1. dataset.changed set (user edited the basis via the popup, which then
+//      displays the edited basis) -> toChf(dataset.csvValue, rowCurrency).
+//   2. else _todayValues[ticker] present & finite (cell displays today's
+//      revalued holding) -> use it directly, it's already CHF.
+//   3. else (cell falls back to displaying the stored basis) ->
+//      toChf(dataset.csvValue, rowCurrency).
+//   4. non-numeric / unconvertible -> null (existing "nulls sort last"
+//      behaviour in sortRows() is unaffected by this).
 function rowSortVal(tr, key) {
   if (key === 'ticker') return (tr.querySelector('[data-field=ticker]')?.textContent || '').trim().toLowerCase();
   if (key === 'name')   return (tr.querySelector('[data-field=name]')?.textContent   || '').trim().toLowerCase();
   if (key === 'exposure') {
     const expEl = tr.querySelector('[data-field=exposure]');
-    const raw = expEl ? parseFloat(expEl.dataset.csvValue) : NaN;
+    if (!expEl) return null;
+    if (!expEl.dataset.changed) {
+      const ticker = tr.querySelector('[data-field=ticker]')?.textContent.trim() || '';
+      const todayChf = _todayValues[ticker];
+      if (typeof todayChf === 'number' && isFinite(todayChf)) return todayChf;
+    }
+    const raw = parseFloat(expEl.dataset.csvValue);
     if (!isFinite(raw)) return null;
     const ccy = tr.querySelector('[data-field=currency]')?.textContent.trim() || '';
-    const chf = toChf(raw, ccy);
-    return chf != null ? chf : raw;
+    return toChf(raw, ccy);
   }
   return null;
 }
