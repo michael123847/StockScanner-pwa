@@ -251,10 +251,31 @@ function buildProxyAliasMap(){
 // viaProxy tells the caller the match is a *different* instrument standing in
 // for the scheme leg (different price series) -- as opposed to an identity
 // alias or a direct match, where the scheme leg's own levels are correct.
-function resolveAliasedTicker(t, proxyMap, isinMap){
-  if(isinMap[t]) return {ticker: isinMap[t], viaProxy: false};
-  if(proxyMap[t]) return {ticker: proxyMap[t], viaProxy: true};
-  return {ticker: t, viaProxy: false};
+// viaEquivalent: the match came from the leg's `equivalents` list (producer-side
+// functions/sleeve_equivalents.py, e.g. GLD<->ZGLD.SW, LQQ<->LQQ.PA) rather than
+// the declared isin/proxy columns -- same "different price series, price off the
+// held instrument" consequence as viaProxy, checked LAST (isin/proxy on the
+// leg's own identifier win first) since a same-underlying match is the weakest
+// signal of the three.
+function resolveAliasedTicker(t, proxyMap, isinMap, equivalents, heldSet){
+  if(isinMap[t]) return {ticker: isinMap[t], viaProxy: false, viaEquivalent: false};
+  if(proxyMap[t]) return {ticker: proxyMap[t], viaProxy: true, viaEquivalent: false};
+  for(const eq of (equivalents||[])){
+    if(heldSet && heldSet.has(eq)) return {ticker: eq, viaProxy: false, viaEquivalent: true};
+    if(isinMap[eq]) return {ticker: isinMap[eq], viaProxy: false, viaEquivalent: true};
+    if(proxyMap[eq]) return {ticker: proxyMap[eq], viaProxy: true, viaEquivalent: true};
+  }
+  return {ticker: t, viaProxy: false, viaEquivalent: false};
+}
+
+// Tickers actually held in Portfolio.csv (portfolioHoldingsData.tickers), for
+// resolveAliasedTicker's equivalence-class check (a) above -- same source/
+// freshness contract as buildProxyAliasMap/buildIsinAliasMap.
+function buildHeldTickerSet(){
+  const set = new Set();
+  const tickers = (portfolioHoldingsData && portfolioHoldingsData.tickers) || [];
+  for(const t of tickers) if(t.ticker) set.add(t.ticker);
+  return set;
 }
 
 // Holdings excluded from the trade-recommendation pool entirely (not counted
@@ -294,15 +315,20 @@ function buildSchemeTargets(schemeKey){
   if(!block) return null;
   const proxyMap = buildProxyAliasMap();
   const isinMap = buildIsinAliasMap();
-  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy}}
-  const add = (originalTk, name, pct, meta) => {
+  const heldSet = buildHeldTickerSet();
+  const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy, viaEquivalent, schemeTicker}}
+  const add = (originalTk, name, pct, meta, equivalents) => {
     if(!pct) return;
-    const {ticker: tk, viaProxy} = resolveAliasedTicker(originalTk, proxyMap, isinMap);
+    const {ticker: tk, viaProxy, viaEquivalent} = resolveAliasedTicker(originalTk, proxyMap, isinMap, equivalents, heldSet);
     // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
     // one -- resolveAliasedTicker() maps it to whatever ticker Portfolio.csv holds
     // it under for matching purposes (e.g. 'CH0032831981' -> 'AVADIS'), which would
-    // otherwise erase the ISIN from the row entirely.
-    const fullMeta = {...(meta||{}), isin: isIsin(originalTk) ? originalTk : null, viaProxy};
+    // otherwise erase the ISIN from the row entirely. schemeTicker is the same idea
+    // for the disclosure sub-line: only set when the match came from proxy/equivalents
+    // (a real substitution), used to tell the user which scheme leg a held instrument
+    // is standing in for.
+    const fullMeta = {...(meta||{}), isin: isIsin(originalTk) ? originalTk : null, viaProxy, viaEquivalent,
+      schemeTicker: (viaProxy || viaEquivalent) ? originalTk : null};
     const prev = targets.get(tk);
     targets.set(tk, {
       name: (prev && prev.name) || name,
@@ -319,7 +345,7 @@ function buildSchemeTargets(schemeKey){
   if(positionsBlock){
     for(const p of (positionsBlock.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
-        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null});
+        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null}, p.equivalents||[]);
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
     cashIsin = positionsBlock.cash_isin || null;
@@ -330,14 +356,17 @@ function buildSchemeTargets(schemeKey){
       // producer: for leveraged sleeves this is the REAL 1x twin's live
       // signal/levels, not the synthetic 2x series — see alloc_live.py).
       add(s.primary_ticker||s.sleeve, s.sleeve, s.hold_primary_pct||0,
-        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null});
+        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null}, s.equivalents||[]);
       if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0){
         // shift_1x_ticker is a display label ("URTH (1x World)") -- the actual
         // matchable ticker is its first token; using the full label as the map
         // key meant this leg could never match a real Portfolio.csv holding.
+        // No equivalents of its own here -- the twin's own class (e.g. QQQ's 1x
+        // Nasdaq class) already resolves via proxy today (see alloc_live.py's
+        // sleeve `equivalents` field, which is only set on the primary ticker).
         const twinTicker = s.shift_1x_ticker.split(' ')[0];
         add(twinTicker, s.shift_1x_ticker, s.hold_1x_pct,
-          {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: null});
+          {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: null}, []);
       }
       cashPct += s.cash_pct||0;
     }
@@ -435,8 +464,10 @@ function computeSchemeTrades(schemeKey){
     // by the actually-held ticker (this report row), so this falls out for
     // free -- no separate viaProxy branch needed for pricing, only for the
     // displayed meta (ml_signal/levels shown in the row detail sheet).
-    const viaProxy = meta && meta.viaProxy && held && held.levels;
-    const rowMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+    // viaEquivalent (same-underlying match, e.g. GLD leg <-> held ZGLD.SW) needs
+    // the identical override: the scheme's own levels are for the OTHER wrapper.
+    const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
+    const rowMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     // Band check uses the SCHEME's own meta (stance), not the holding's report
     // signal: B&H legs carry no ml_signal in the scheme JSON, timed legs do.
@@ -510,8 +541,8 @@ function computeAddCash(schemeKey, cashChf){
     const targetVal = newTotal * pct / 100;
     const held = byTicker.get(tk);
     const curVal = (held||{}).value || 0;
-    const viaProxy = meta && meta.viaProxy && held && held.levels;
-    const legMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+    const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
+    const legMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
       orderHints: (held||{}).orderHints || null,
@@ -609,8 +640,8 @@ function computeWithdrawal(schemeKey, cashChf){
     const targetVal = newTotal * pct / 100;
     const held = byTicker.get(tk);
     const curVal = (held||{}).value || 0;
-    const viaProxy = meta && meta.viaProxy && held && held.levels;
-    const legMeta = viaProxy ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+    const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
+    const legMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     legs.push({ticker: tk, name: (held||{}).name || name, pct, curVal, meta: legMeta,
       orderHints: (held||{}).orderHints || null,
@@ -637,6 +668,15 @@ function computeWithdrawal(schemeKey, cashChf){
   rows.forEach(r => { r.orderHint = localizeOrderHint(r.orderHints ? r.orderHints.sell : null, 'sell'); });
   rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', amount: W, meta: null, orderHints: null, orderHint: null, isin: built.cashIsin});
   return {cash: W, rows, fx: holdings.fx};
+}
+
+// Substitution disclosure: a viaEquivalent match silently changes what's actually
+// HELD vs what the scheme backtested (e.g. ZGLD.SW is CHF-quoted, GLD is USD) --
+// this is never allowed to be a silent substitution, so every trades/add-cash/
+// withdrawal row for such a leg gets an extra .cell-sub line under the ticker.
+function equivalentSubLine(r){
+  if(!r.meta || !r.meta.viaEquivalent || !r.meta.schemeTicker) return '';
+  return `<div class="cell-sub">hält ${esc(r.ticker)} für ${esc(r.meta.schemeTicker)}-Sleeve</div>`;
 }
 
 // Same green/red convention as the Übersicht Order column (orderCell/orderDirection).
@@ -667,7 +707,7 @@ function renderTradesHtml(result){
   const rows = result.rows.map((r,i) => {
     const tradeCls = r.trade>0?'pos':(r.trade<0?'neg':'');
     return `<tr class="alloc-trade-row" data-kind="trade" data-idx="${i}">
-    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div>${equivalentSubLine(r)}</td>
     <td class="wide-col">${convertCHF(r.curVal, currency, result.fx)}</td>
     <td class="wide-col">${convertCHF(r.targetVal, currency, result.fx)}</td>
     <td class="wide-col num ${tradeCls}">${convertCHF(r.trade, currency, result.fx)}</td>
@@ -701,7 +741,7 @@ function renderAddCashHtml(result){
   _lastAddCashResult = result;
   if(!result || !result.rows.length) return '';
   const rows = result.rows.map((r,i) => `<tr class="alloc-trade-row" data-kind="addcash" data-idx="${i}">
-    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div>${equivalentSubLine(r)}</td>
     <td>${allocOrderCell(r.orderHint, 'buy')}</td>
   </tr>`).join('');
   return `
@@ -736,7 +776,7 @@ function renderWithdrawalHtml(result){
     </tr>`;
     }
     return `<tr class="alloc-trade-row" data-kind="withdrawal" data-idx="${i}">
-    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div></td>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div>${equivalentSubLine(r)}</td>
     <td>${allocOrderCell(r.orderHint, 'sell')}</td>
   </tr>`;
   }).join('');
