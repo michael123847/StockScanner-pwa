@@ -127,29 +127,6 @@ function firstSchemeKey(a){
   return Object.keys(schemes)[0] || null;
 }
 
-// Normalizes a legacy pre-`schemes`-wrapper payload (scheme5's fields at the
-// payload root, hybrid/techheavy/cashout nested beside them -- the producer's
-// shape before its 2026-07-16 reshape) into the current uniform
-// {asof, currency, schemes:{scheme5, hybrid, techheavy, cashout}} shape, so a
-// stale backend (old alloc_scheme5_live.py / allocation_scheme5.json) still
-// renders. Everything downstream reads only the new shape.
-function normalizeAllocationPayload(a){
-  if(!a || a.schemes) return a;
-  return {
-    asof: a.asof,
-    currency: a.currency,
-    schemes: {
-      scheme5: {
-        label: a.label, short_label: a.short_label,
-        metrics: a.scheme5_metrics, sleeves: a.sleeves,
-        in_1x_twins_pct: a.in_1x_twins_pct, cash_money_market_pct: a.cash_money_market_pct,
-        derisk_rule: a.derisk_rule, cash_destination: a.cash_destination, caveats: a.caveats,
-      },
-      hybrid: a.hybrid, techheavy: a.techheavy, cashout: a.cashout,
-    },
-  };
-}
-
 /** Fetch Output/allocation.json via the server; cache in a module var.
  *  Failure is silent (console.warn only) — renderAllocation() shows its own
  *  empty state. Re-renders immediately if the Allokation sub-tab is open. */
@@ -158,7 +135,7 @@ export async function ensureAllocation(){
   allocationTried = true;
   try{
     const url = getActiveBase() + CONFIG.STOCKS_ALLOCATION_PATH;
-    allocationData = normalizeAllocationPayload(await apiJson(url));
+    allocationData = await apiJson(url);
     populateSchemeDropdown(allocationData);
     // Default the dropdown to whatever the user has marked "Aktiv" (see
     // getActiveScheme) rather than always opening on the first <option>
@@ -346,9 +323,9 @@ function buildSchemeTargets(schemeKey){
   };
   let cashPct = 0;
   let cashIsin = null;
-  // Any "positions"-shaped block (hybrid/techheavy/cashout/…) shares this
-  // branch -- adding a new scheme to the producer's JSON needs no new PWA
-  // branch here as long as it follows the same shape.
+  // Any "positions"-shaped scheme block shares this branch -- adding a new
+  // scheme to the producer's JSON needs no new PWA branch here as long as
+  // it follows the same shape.
   const positionsBlock = Array.isArray(block.positions) ? block : null;
   if(positionsBlock){
     for(const p of (positionsBlock.positions||[])){
@@ -1480,6 +1457,40 @@ export async function loadDigestPerf(){
   else wrap.style.display = 'none';
 }
 
+/** Per-holding rows for the Digest-tab copyable allocation table: the latest
+ *  Portfolio and Portfolio_exclude reports, each row {name, isin, value_chf,
+ *  list}. value_chf/isin come from holding.* (already FX-converted CHF); ISIN
+ *  is '' when the holding has none. No ticker names/ISINs/amounts are hard-coded
+ *  -- everything is read live from the report JSON. Each list degrades to [] on
+ *  fetch failure so the caller still renders whatever loaded. */
+export async function loadPortfolioAllocationRows(){
+  const rowsFor = async (listName, listLabel) => {
+    try{
+      const idx = await apiJson(indexUrl());
+      const entry = (idx||[]).find(e => (e.portfolio||e.file) === listName);
+      if(!entry) return [];
+      const data = await apiJson(reportUrl(entry.file));
+      return ((data && data.tickers) || []).map(t => {
+        const h = t.holding || {};
+        return {
+          name: t.name || t.ticker || '',
+          isin: (h.isin && String(h.isin).trim()) || '',
+          value_chf: isNum(h.value_chf) ? h.value_chf : 0,
+          list: listLabel,
+        };
+      });
+    }catch(err){
+      console.warn(listName + ' allocation rows fetch failed:', err.message);
+      return [];
+    }
+  };
+  const [main, excl] = await Promise.all([
+    rowsFor('Portfolio', 'Portfolio'),
+    rowsFor('Portfolio_exclude', 'Portfolio-exclude'),
+  ]);
+  return [...main, ...excl];
+}
+
 function drawPerf(perf){
   const cv = $('#c-perf');
   if(!cv) return;
@@ -1926,14 +1937,13 @@ function metricsBoxHtml(m){
 }
 
 // Shared hint/caveats block for every scheme card -- assembled from whatever
-// fields a given scheme's block actually carries (derisk_rule is scheme5-
-// specific, cash_destination/note/caveats vary too), so schemes that used to
-// go through two different hand-written hint blocks (renderHybridHtml's own
-// inline version vs scheme5's own inline version in renderAllocation) now
-// render through ONE function -- same order, same markup, same styling,
-// regardless of which fields a particular scheme happens to have. The static
+// fields a given scheme's block actually carries (derisk_rule is specific to
+// some schemes, cash_destination/note/caveats vary too), so schemes that used
+// to go through separate hand-written hint blocks now render through ONE
+// function -- same order, same markup, same styling, regardless of which
+// fields a particular scheme happens to have. The static
 // "Per-Ticker-Evidenz" hint applies to every scheme (sleeves are real tickers
-// too), so it's no longer scheme5-exclusive-by-omission.
+// too), so it's no longer exclusive to one scheme by omission.
 function schemeHintsHtml(block){
   if(!block) return '';
   const hints = [block.derisk_rule, block.cash_destination, block.note].filter(Boolean);
@@ -2005,9 +2015,9 @@ export function renderAllocation(){
 
   if(metaEl){
     metaEl.style.display='';
-    // Every scheme block (scheme5 included) carries its own label under
-    // a.schemes[scheme] -- uniform since the producer's 2026-07-16 reshape
-    // (previously scheme5's label lived at the payload root, the one exception).
+    // Every scheme block carries its own label under a.schemes[scheme] --
+    // uniform since the producer's 2026-07-16 reshape (previously one scheme's
+    // label lived at the payload root, the one exception).
     // The "Research" badge was REMOVED 2026-08-03: which scheme is held is the
     // user's own decision, so tagging one as research read as a recommendation
     // not to pick it. Each scheme's substantive caveats still surface via its

@@ -45,7 +45,7 @@ const REPORT  = args.report || null;    // exact file, e.g. 20260702_Portfolio.j
 const TAB     = args.tab || null;       // bottom-tab label, e.g. Charts
 const TICKER  = args.ticker || null;    // chart-view ticker, e.g. DCUSAS.SW
 const FILTER  = args.filter || null;    // text to type into #filter (debounce test)
-// --seed="ss_active_scheme=techheavy,foo=bar" — extra localStorage entries set
+// --seed="ss_active_scheme=<scheme-key>,foo=bar" — extra localStorage entries set
 // BEFORE the first navigation (alongside the token/base seed below), for
 // testing prefs that only matter on a cold load (e.g. "does the app open on
 // what was left active", not "does a click during this session set it").
@@ -156,10 +156,7 @@ await context.route('**/api/stocks/**', async route => {
       return jres(route, keys.map(k => ({ key: k, label: k, builtin: k === 'Portfolio' || k === 'Watchlist' })));
     }
     if (ep === 'allocation') {
-      // Mixed-version safety, mirrors server.js: prefer the current file, fall
-      // back to the pre-rename one if only that exists on disk.
-      let f = path.join(OUTPUT_DIR, 'allocation.json');
-      if (!existsSync(f)) f = path.join(OUTPUT_DIR, 'allocation_scheme5.json');
+      const f = path.join(OUTPUT_DIR, 'allocation.json');
       return existsSync(f) ? jres(route, JSON.parse(await readFile(f, 'utf-8'))) : jres(route, {}, 404);
     }
     if (ep === 'metrics') {

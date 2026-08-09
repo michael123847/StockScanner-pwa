@@ -5,7 +5,7 @@
 import { CONFIG } from './config.js';
 import { getActiveBase, authHeaders } from './localBridge.js';
 import { fmtDateTime } from './format.js';
-import { selectTickerIfPresent, ensureAllocation, renderAllocation, loadDigestPerf } from './viewer.js';
+import { selectTickerIfPresent, ensureAllocation, renderAllocation, loadDigestPerf, loadPortfolioAllocationRows } from './viewer.js';
 
 const $ = s => document.querySelector(s);
 
@@ -183,6 +183,71 @@ async function loadTxt(base, hdrs, prePre, mdDiv, err, stamp) {
   }
 }
 
+// ---------- Copyable Markdown portfolio table (Digest sub-tab) ----------
+// A single combined allocation table (Portfolio + Portfolio-exclude), each
+// row's Anteil % measured against the COMBINED total so an outside reader sees
+// the true weight of every holding across both lists. Rendered as raw Markdown
+// in a monospace block -- what is shown is exactly what the Kopieren button
+// copies. All values come from the report JSON at runtime; nothing about the
+// holdings is hard-coded (public-repo constraint).
+let _pfMd = null;         // built Markdown string, or null when nothing to show
+let _pfMdLoaded = false;  // one build per session (holdings are static within it)
+let _pfMdFetch = null;    // in-flight build promise, so concurrent callers share it
+
+// Escape the two Markdown-table-breaking characters in a cell value.
+function mdCell(s){ return String(s == null ? '' : s).replace(/\|/g, '\\|').trim(); }
+
+// Build the combined table. Drops rows with no CHF position (an allocation
+// table has no use for a 0% line). Percentages are of the combined total; the
+// Summe row shows the sum of the *displayed* (rounded) percentages so the
+// reader can sanity-check that they add to ~100. Returns null when no priced
+// holding is available at all.
+function buildPortfolioMd(rows){
+  const priced = (rows || []).filter(r => Number(r.value_chf) > 0);
+  const total = priced.reduce((s, r) => s + Number(r.value_chf), 0);
+  if(!priced.length || total <= 0) return null;
+  priced.sort((a, b) => b.value_chf - a.value_chf);
+  const lines = [
+    '| Name | ISIN | Liste | Anteil % |',
+    '| --- | --- | --- | ---: |',
+  ];
+  let pctSum = 0;
+  for(const r of priced){
+    const pct = r.value_chf / total * 100;
+    pctSum += Math.round(pct * 10) / 10;
+    lines.push(`| ${mdCell(r.name)} | ${mdCell(r.isin)} | ${mdCell(r.list)} | ${pct.toFixed(1)} |`);
+  }
+  lines.push(`| **Summe** |  |  | **${pctSum.toFixed(1)}** |`);
+  return lines.join('\n');
+}
+
+function renderPortfolioMd(md){
+  const body = $('#pf-md-body');
+  if(!body) return false;
+  body.textContent = md || '';   // raw Markdown, monospace, exactly what's copied
+  return !!md;
+}
+
+// Show/hide the block by the same rule as the portfolio-value chart: visible on
+// the Digest sub-tab, hidden on Allokation. Builds once, then just toggles.
+export async function refreshPortfolioMd(){
+  const wrap = $('#pf-md-wrap');
+  if(!wrap) return;
+  const allocPanel = $('#alloc-panel');
+  if(allocPanel && allocPanel.style.display !== 'none'){ wrap.style.display = 'none'; return; }
+  if(!_pfMdLoaded){
+    if(!_pfMdFetch){
+      _pfMdFetch = loadPortfolioAllocationRows()
+        .then(rows => { _pfMd = buildPortfolioMd(rows); })
+        .catch(err => { console.warn('portfolio md build failed:', err.message); _pfMd = null; })
+        .finally(() => { _pfMdLoaded = true; _pfMdFetch = null; });
+    }
+    await _pfMdFetch;
+  }
+  const hasContent = renderPortfolioMd(_pfMd);
+  wrap.style.display = hasContent ? '' : 'none';
+}
+
 // ---------- Digest | Allokation sub-tabs ----------
 // Allokation is portfolio-wide and list-independent (not tied to any single
 // Übersicht report), so it lives here as a sibling view rather than as an
@@ -210,6 +275,10 @@ function switchSubtab(name) {
     if (!_loaded) loadDigest();
     loadDigestPerf();
   }
+  // The copyable Markdown table lives directly below the portfolio-value chart
+  // and follows the same show/hide rule -- refreshPortfolioMd() self-determines
+  // visibility from the current sub-tab, so it hides under Allokation with the chart.
+  refreshPortfolioMd();
 }
 
 export function initDigest() {
@@ -218,8 +287,23 @@ export function initDigest() {
   let savedSubtab = 'digest';
   try { savedSubtab = localStorage.getItem(SUBTAB_KEY) || 'digest'; } catch {}
   if (savedSubtab === 'alloc') switchSubtab('alloc');
+  else refreshPortfolioMd();   // default digest sub-tab: switchSubtab isn't called, so build/show here
 
   $('#digest-refresh')?.addEventListener('click', loadDigest);
+
+  // Copy the raw Markdown exactly as shown (reuses the clipboard pattern from
+  // portfolio.js; clipboard unavailability is swallowed as non-critical).
+  $('#pf-md-copy')?.addEventListener('click', async () => {
+    const btn = $('#pf-md-copy');
+    const txt = $('#pf-md-body')?.textContent || '';
+    if (!txt) return;
+    try {
+      await navigator.clipboard.writeText(txt);
+      const orig = btn.textContent;
+      btn.textContent = 'Kopiert ✓';
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    } catch { /* clipboard unavailable — silent, non-critical */ }
+  });
 
   // Ticker chip clicks — delegate once on the persistent container
   $('#digest-body-md')?.addEventListener('click', e => {
@@ -236,6 +320,7 @@ export function initDigest() {
 
   window.addEventListener('pwa:tab', e => {
     if (e.detail === 'digest' && digestSubtabActive() && !_loaded) loadDigest();
+    if (e.detail === 'digest') refreshPortfolioMd();   // re-assert visibility on Digest-tab re-entry
   });
 
   window.addEventListener('pwa:server', e => {

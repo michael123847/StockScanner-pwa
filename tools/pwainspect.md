@@ -49,6 +49,7 @@ screenshot):
 | `--filter=text` | type into `#filter` (tests the 150 ms debounce) |
 | `--reload` | full reload after the above — proves localStorage prefs survive cold boot |
 | `--eval="<js>"` | evaluate in page context, print JSON — layout forensics |
+| `--seed="ss_active_scheme=<key>"` | extra `localStorage` entries written **before** first navigation (comma-separated `k=v`), alongside the built-in token/base seed — the only way to exercise behaviour that keys off persisted state |
 | `SS_DROP=allocation,series` | force endpoints to 404 — exercises missing-data paths |
 
 Every run prints a summary (report shown, table rows, viewer error if any,
@@ -92,6 +93,24 @@ no clipping.
   block is skipped entirely. Always write `--eval` as **one line** (an IIFE
   works fine on one line; use `;` instead of newlines between statements if
   needed).
+- **Interacting immediately after a tab switch RACES that pane's async load —
+  and the race looks exactly like a broken feature.** `--tab=portfolio` (and
+  the Allokation sub-tab) kicks off a fetch; `--type`/`--click`/`--toggle`
+  applied in the same invocation can land while the table is still empty, so
+  the filter/sort/edit silently no-ops against zero rows. Nothing errors: you
+  get a clean run, a plausible screenshot, and a wrong conclusion. This cost a
+  false "the Portfolio filter is broken" bug report (2026-08-09) — the filter
+  was fine. Either drive the interaction *inside* a single-line async `--eval`
+  with an explicit settle (`…;await new Promise(r=>setTimeout(r,300));…`), or
+  pass a generous `--wait`. **Before believing any "control X doesn't work"
+  finding on an async pane, re-run it with an explicit wait.**
+- **A cold context only ever tests the fallback path.** Each run starts with a
+  fresh `localStorage` (just the seeded token/base), so anything that reads
+  persisted state — `getActiveScheme()`/`ss_active_scheme`, table presets,
+  currency choice — takes its default branch, not the branch a real device
+  takes. Use `--seed="<key>=<value>"` to test the real path; concluding
+  "it defaults to the wrong thing" from an unseeded run is a false positive
+  (also cost one, same sweep).
 - **`scrollWidth > clientWidth` misses sub-pixel clipping.** Both are reported
   as *rounded* integer pixels, so 56.3px of text in a 56px box reports
   `56 === 56` (no overflow detected) while the text is visibly ellipsising.

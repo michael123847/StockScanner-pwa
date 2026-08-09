@@ -232,6 +232,8 @@ canvas{width:100%;display:block;touch-action:pan-y}
   border-radius:12px;padding:16px;
   margin:0;
 }
+.pf-md-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0 8px}
+.pf-md-head .section-label{margin:0}
 .digest-md{font-size:14px;line-height:1.6;padding:0 2px}
 .digest-regime{margin-bottom:14px}
 .digest-md-h2{font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim);margin:18px 0 6px;font-weight:600}
