@@ -1514,7 +1514,14 @@ function drawPerf(perf){
   const validVals = [...mainVals, ...totalVals].filter(v => v !== null && isNum(v));
   if(!validVals.length) return;
 
-  const [yMin, yMax] = niceBounds(validVals);
+  // Forced zero baseline (scoped to this chart only -- do not change
+  // niceBounds/plot defaults, which other charts, e.g. Charts-tab price
+  // series, rely on for an auto-scaled floating baseline). A stacked area
+  // chart encodes magnitude by fill height, so a non-zero baseline makes the
+  // two bands' relative sizes read false; only the upper bound keeps
+  // niceBounds' 8% headroom padding.
+  const [, yMax] = niceBounds(validVals);
+  const yMin = 0;
 
   // Y-axis formatter
   let yfmt;
@@ -1522,8 +1529,10 @@ function drawPerf(perf){
     yfmt = v => v.toFixed(4);
   } else {
     const mag = Math.abs(yMax);
-    yfmt = mag >= 1e6 ? v => (v/1e6).toFixed(2)+'M'
-         : mag >= 1e3 ? v => (v/1e3).toFixed(1)+'k'
+    // Zero is special-cased to a bare "0" (not "0.0k") since it's the new
+    // fixed origin, not just another k-scaled tick.
+    yfmt = mag >= 1e6 ? v => v === 0 ? '0' : (v/1e6).toFixed(2)+'M'
+         : mag >= 1e3 ? v => v === 0 ? '0' : (v/1e3).toFixed(1)+'k'
          : v => v.toFixed(0);
   }
 
