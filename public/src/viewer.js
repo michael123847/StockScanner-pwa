@@ -1396,11 +1396,14 @@ function _fillOnUnion(map, unionDates){
   return out;
 }
 
-/** Sum two portfolio_series payloads ({dates,total,fx}) onto their date union. */
+/** Sum two portfolio_series payloads ({dates,total,fx}) onto their date union.
+ * Besides the summed `total` (unchanged, still what everything else reads),
+ * also returns the two aligned components (`mainTotal` = a/Portfolio,
+ * `exclTotal` = b/Portfolio_exclude) so the Digest chart can stack them. */
 function combinePerf(a, b){
   if(!a && !b) return null;
-  if(!a) return b;
-  if(!b) return a;
+  if(!a) return {...b, mainTotal: (b.dates||[]).map(()=>0), exclTotal: b.total};
+  if(!b) return {...a, mainTotal: a.total, exclTotal: (a.dates||[]).map(()=>0)};
   const unionDates = Array.from(new Set([...(a.dates||[]), ...(b.dates||[])])).sort();
   const aTotal = _fillOnUnion(new Map((a.dates||[]).map((d,i)=>[d, a.total[i]])), unionDates);
   const bTotal = _fillOnUnion(new Map((b.dates||[]).map((d,i)=>[d, b.total[i]])), unionDates);
@@ -1414,7 +1417,7 @@ function combinePerf(a, b){
     const bFilled = _fillOnUnion(bMap, unionDates);
     fx[k] = unionDates.map((_, i) => aFilled[i] ?? bFilled[i] ?? null);
   }
-  return {base: a.base || b.base, dates: unionDates, total, fx};
+  return {base: a.base || b.base, dates: unionDates, total, mainTotal: aTotal, exclTotal: bTotal, fx};
 }
 
 let _digestPerfLoaded = false;
@@ -1491,6 +1494,10 @@ export async function loadPortfolioAllocationRows(){
   return [...main, ...excl];
 }
 
+// Stack colour for the Portfolio-exclude band (Portfolio itself keeps the
+// pre-existing #4ea1ff so the chart stays visually familiar).
+const PERF_EXCL_COLOR = '#ff9f40';
+
 function drawPerf(perf){
   const cv = $('#c-perf');
   if(!cv) return;
@@ -1498,9 +1505,13 @@ function drawPerf(perf){
 
   const currency = getCurrency();
   const dates = perf.dates;
-  const yVals = perf.total.map((v, i) => convertCHFArr(v, currency, perf.fx, i));
+  // Bottom band (Portfolio) and the stacked top edge (= total, unchanged
+  // reading). Portfolio-exclude isn't plotted as its own line -- it's the
+  // gap between mainVals and totalVals, filled in below.
+  const mainVals = (perf.mainTotal || perf.total).map((v, i) => convertCHFArr(v, currency, perf.fx, i));
+  const totalVals = perf.total.map((v, i) => convertCHFArr(v, currency, perf.fx, i));
 
-  const validVals = yVals.filter(v => v !== null && isNum(v));
+  const validVals = [...mainVals, ...totalVals].filter(v => v !== null && isNum(v));
   if(!validVals.length) return;
 
   const [yMin, yMax] = niceBounds(validVals);
@@ -1516,17 +1527,22 @@ function drawPerf(perf){
          : v => v.toFixed(0);
   }
 
+  const baseline = dates.map(() => yMin);
+
   plot({
     canvas: cv,
     x: dates,
     yMin, yMax,
     yticks: 4,
     yfmt,
-    series: [{ data: yVals, color: '#4ea1ff', width: 1.8 }],
+    series: [
+      { data: mainVals, color: '#4ea1ff', width: 1.8, fillTo: baseline, fillColor: 'rgba(78,161,255,.35)' },
+      { data: totalVals, color: PERF_EXCL_COLOR, width: 1.6, fillTo: mainVals, fillColor: 'rgba(255,159,64,.35)' },
+    ],
   });
 
   const lgEl = $('#lg-perf');
-  if(lgEl) legend(lgEl, [['#4ea1ff', 'Portfolio gesamt inkl. Exclude (' + currency + ')']]);
+  if(lgEl) legend(lgEl, [['#4ea1ff', 'Portfolio (' + currency + ')'], [PERF_EXCL_COLOR, 'Portfolio-exclude (' + currency + ')']]);
 }
 
 /** Loads the report manifest and renders the newest report. */
@@ -2310,6 +2326,28 @@ function plot(cfg){
   const maxLabels=Math.max(2,Math.floor(plotW/LBL_PX));
   const step=Math.max(1,Math.ceil(n/maxLabels));
   for(let i=0;i<n;i+=step){ ctx.fillText((cfg.x[i]||'').slice(2), xAt(i), h-PB+11); }
+  // Opt-in area fill: a series with `fillTo` (a baseline array in the same
+  // y-domain as `data`, e.g. another series' values or a flat yMin line) gets
+  // its area filled with `fillColor` (falls back to `color`). Existing
+  // callers never set `fillTo`, so this loop is a no-op for them -- rendering
+  // stays byte-identical. Drawn before the stroke loop so lines sit on top.
+  for(const s of cfg.series){
+    if(!s.data || !s.fillTo) continue;
+    ctx.fillStyle = s.fillColor || s.color;
+    let i = 0;
+    while(i < n){
+      if(!isNum(s.data[i]) || !isNum(s.fillTo[i])){ i++; continue; }
+      let j = i;
+      while(j < n && isNum(s.data[j]) && isNum(s.fillTo[j])) j++;
+      ctx.beginPath();
+      ctx.moveTo(xAt(i), yAt(s.data[i]));
+      for(let k=i+1;k<j;k++) ctx.lineTo(xAt(k), yAt(s.data[k]));
+      for(let k=j-1;k>=i;k--) ctx.lineTo(xAt(k), yAt(s.fillTo[k]));
+      ctx.closePath();
+      ctx.fill();
+      i = j;
+    }
+  }
   for(const s of cfg.series){ if(!s.data) continue; ctx.strokeStyle=s.color; ctx.lineWidth=s.width||1.6;
     ctx.setLineDash(s.dash||[]); ctx.beginPath(); let pen=false;
     for(let i=0;i<n;i++){ const v=s.data[i]; if(!isNum(v)){ pen=false; continue; }

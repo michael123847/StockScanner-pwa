@@ -234,6 +234,21 @@ canvas{width:100%;display:block;touch-action:pan-y}
 }
 .pf-md-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0 8px}
 .pf-md-head .section-label{margin:0}
+/* Markdown allocation table: smaller than .digest-pre's default (13px) AND
+   forced onto one physical line per row -- overrides .digest-pre's
+   pre-wrap/break-word (kept there for the digest prose block, #digest-body,
+   which should keep wrapping; scoped to this id-derived class so prose is
+   unaffected). A wrapped `| Name | ISIN | Anteil % |` row no longer reads as
+   a table row, so long rows scroll horizontally instead of breaking. */
+.pf-md-pre{font-size:11px;line-height:1.5;padding-right:40px;white-space:pre;word-break:normal;overflow-x:auto}
+.pf-md-block{position:relative}
+.pf-md-copy-btn{
+  position:absolute;right:8px;bottom:8px;
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--card-border);border-radius:8px;
+  font-size:15px;
+}
 .digest-md{font-size:14px;line-height:1.6;padding:0 2px}
 .digest-regime{margin-bottom:14px}
 .digest-md-h2{font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim);margin:18px 0 6px;font-weight:600}

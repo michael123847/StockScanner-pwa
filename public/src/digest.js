@@ -208,16 +208,16 @@ function buildPortfolioMd(rows){
   if(!priced.length || total <= 0) return null;
   priced.sort((a, b) => b.value_chf - a.value_chf);
   const lines = [
-    '| Name | ISIN | Liste | Anteil % |',
-    '| --- | --- | --- | ---: |',
+    '| Name | ISIN | Anteil % |',
+    '| --- | --- | ---: |',
   ];
   let pctSum = 0;
   for(const r of priced){
     const pct = r.value_chf / total * 100;
     pctSum += Math.round(pct * 10) / 10;
-    lines.push(`| ${mdCell(r.name)} | ${mdCell(r.isin)} | ${mdCell(r.list)} | ${pct.toFixed(1)} |`);
+    lines.push(`| ${mdCell(r.name)} | ${mdCell(r.isin)} | ${pct.toFixed(1)} |`);
   }
-  lines.push(`| **Summe** |  |  | **${pctSum.toFixed(1)}** |`);
+  lines.push(`| **Summe** |  | **${pctSum.toFixed(1)}** |`);
   return lines.join('\n');
 }
 
@@ -291,8 +291,10 @@ export function initDigest() {
 
   $('#digest-refresh')?.addEventListener('click', loadDigest);
 
-  // Copy the raw Markdown exactly as shown (reuses the clipboard pattern from
-  // portfolio.js; clipboard unavailability is swallowed as non-critical).
+  // Copy the raw Markdown exactly as shown (icon-only overlay button; same
+  // confirmation idiom as the .copy-btn instances elsewhere -- see
+  // wireCopyButtons in viewer.js). Clipboard unavailability is swallowed as
+  // non-critical.
   $('#pf-md-copy')?.addEventListener('click', async () => {
     const btn = $('#pf-md-copy');
     const txt = $('#pf-md-body')?.textContent || '';
@@ -300,8 +302,9 @@ export function initDigest() {
     try {
       await navigator.clipboard.writeText(txt);
       const orig = btn.textContent;
-      btn.textContent = 'Kopiert ✓';
-      setTimeout(() => { btn.textContent = orig; }, 1200);
+      btn.textContent = '✓';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1200);
     } catch { /* clipboard unavailable — silent, non-critical */ }
   });
 
