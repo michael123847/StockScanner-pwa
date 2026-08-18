@@ -1,6 +1,6 @@
 /**
  * push.js — Web Push subscription toggle for the allocation binary-signal-flip
- * notification (Allokation sub-tab, button #alloc-push-toggle).
+ * notification (Info tab, button #info-push-toggle).
  *
  * PUBLIC-repo constraint: this file must never contain a scheme name or scheme
  * key literal. The notification title/body is composed entirely server-side
@@ -27,9 +27,8 @@ export function urlBase64ToUint8Array(b64) {
   return arr;
 }
 
-// Guards the one-time listener wiring below — initPushToggle() is called on
-// every Allokation render (idempotent), but click/event listeners must only
-// ever be attached once.
+// Guards the one-time listener wiring below — initPushToggle() is called
+// once from main.js at boot, but the guard keeps it idempotent regardless.
 let _wired = false;
 let _reg   = null; // cached ServiceWorkerRegistration, set on first call
 
@@ -88,7 +87,21 @@ async function onToggleClick(btn) {
     return;
   }
 
-  // Enable — permission is requested ONLY here, never on boot.
+  // Enable — resolve the scheme FIRST, before touching permissions at all.
+  // Runtime value only — never a literal scheme name/key in this file; the
+  // check below is on emptiness only.
+  const scheme = localStorage.getItem('ss_active_scheme')
+    || document.getElementById('alloc-scheme-sel')?.value
+    || '';
+  if (!scheme) {
+    console.warn('[push] enable aborted: no active scheme yet — open Allokation and activate a scheme first');
+    btn.textContent = '🔔 Kein Schema aktiv';
+    btn.disabled = false;
+    setTimeout(() => setLabel(btn, 'off'), 3000);
+    return;
+  }
+
+  // Permission is requested ONLY here, never on boot.
   let newSub = null;
   try {
     const perm = await Notification.requestPermission();
@@ -104,11 +117,6 @@ async function onToggleClick(btn) {
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
-
-    // Runtime value only — never a literal scheme name/key in this file.
-    const scheme = localStorage.getItem('ss_active_scheme')
-      || document.getElementById('alloc-scheme-sel')?.value
-      || '';
 
     const postR = await fetch(getActiveBase() + CONFIG.STOCKS_PUSH_SUBSCRIBE_PATH, {
       method: 'POST', credentials: 'omit',
@@ -143,13 +151,13 @@ async function onSchemeActivated(e) {
 }
 
 /**
- * Wires and renders the push-notification toggle. Safe to call every time the
- * Allokation panel renders — listener wiring happens only once; the
- * hidden/support check and (on the first call) the truth-render run every
- * time this is invoked.
+ * Wires and renders the push-notification toggle (called once, from main.js
+ * at boot). Idempotent by construction — listener wiring happens only once
+ * even if called again; the hidden/support check runs every time this is
+ * invoked.
  */
 export function initPushToggle() {
-  const btn = document.getElementById('alloc-push-toggle');
+  const btn = document.getElementById('info-push-toggle');
   if (!btn) return;
 
   if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
