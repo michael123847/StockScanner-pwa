@@ -2597,6 +2597,9 @@ export function initViewer(){
     activateBtn.addEventListener('click', () => {
       const cur = ($('#alloc-scheme-sel')||{}).value || firstSchemeKey(allocationData);
       setActiveScheme(cur);
+      // push.js listens for this to re-point an existing push subscription at
+      // the newly-active scheme, without viewer.js needing to import it.
+      window.dispatchEvent(new CustomEvent('ss:scheme-activated', { detail: cur }));
       if(allocationData) renderAllocation();
     });
   }

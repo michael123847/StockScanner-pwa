@@ -25,6 +25,7 @@ import { initTabs } from './tabs.js';
 import { initInfo } from './info.js';
 import { initPortfolio } from './portfolio.js';
 import { initDigest } from './digest.js';
+import { initPushToggle } from './push.js';
 
 const $ = s => document.querySelector(s);
 
@@ -123,9 +124,20 @@ function wireSetup() {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
+// Switches to the Digest tab and its Allokation sub-tab — reuses the existing
+// bottom-nav / sub-tab wiring (tabs.js / digest.js) rather than duplicating it.
+function openAllocView() {
+  window.dispatchEvent(new CustomEvent('pwa:navigate', { detail: 'digest' }));
+  document.getElementById('dtab-alloc')?.click();
+}
+
 (async () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
+    // Tapping an "alloc-signal" push notification posts this back from sw.js.
+    navigator.serviceWorker.addEventListener('message', e => {
+      if (e.data?.type === 'open-alloc') openAllocView();
+    });
   }
 
   initTabs();
@@ -133,7 +145,12 @@ function wireSetup() {
   initInfo();
   initPortfolio();
   initDigest();
+  initPushToggle();
   wireSetup();
+
+  // Cold start from a notification tap (clients.openWindow('./#alloc')) —
+  // no existing client to postMessage to, so the hash itself is the signal.
+  if (location.hash === '#alloc') openAllocView();
 
   await probeBase();
   await refresh();

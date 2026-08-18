@@ -39,6 +39,7 @@ const SHELL_ASSETS = [
   './src/digest.js',
   './src/format.js',
   './src/lists.js',
+  './src/push.js',
 ];
 
 self.addEventListener('install', e => {
@@ -94,4 +95,50 @@ self.addEventListener('fetch', e => {
     );
   }
   // Anything else: let the browser handle it (there are no third-party APIs).
+});
+
+/**
+ * Push event — fired by the OS when the server sends a Web Push to this
+ * subscription. The payload is composed entirely server-side (see the
+ * private backend's server/signal_flips.js); title/body are rendered
+ * verbatim here — no scheme strings live in this file.
+ *
+ *   { type: 'alloc-signal', title, body }
+ */
+self.addEventListener('push', e => {
+  if (!e.data) return;
+  let data;
+  try { data = e.data.json(); } catch { return; }
+  if (data.type !== 'alloc-signal') return;
+
+  e.waitUntil(
+    self.registration.showNotification(data.title || 'StockScanner', {
+      body:     data.body || '',
+      tag:      'alloc-signal',   // collapse repeats into one notification
+      renotify: true,             // but still buzz the device
+      icon:     './icons/icon-192.png',  // best-effort — ok if absent (no PNG icons shipped, manifest uses inline SVG)
+      badge:    './icons/icon-96.png',
+      data:     { url: './#alloc' },
+    })
+  );
+});
+
+/**
+ * Tap handler: focus an existing client and tell it to open the Allokation
+ * sub-tab, else open a fresh window there.
+ */
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = e.notification.data?.url || './#alloc';
+  e.waitUntil((async () => {
+    const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of allClients) {
+      try {
+        await c.focus();
+        c.postMessage({ type: 'open-alloc' });
+        return;
+      } catch { /* fall through to openWindow */ }
+    }
+    await self.clients.openWindow(url);
+  })());
 });

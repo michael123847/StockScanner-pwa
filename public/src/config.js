@@ -45,6 +45,14 @@ export const CONFIG = {
   STOCKS_PORTFOLIO_EXCLUDE_PATH: '/api/stocks/portfolio_exclude', // GET → {tickers:[{ticker,name,exposure,currency,'as of'}]}
   STOCKS_RESEARCH_LISTS_PATH: '/api/stocks/research_lists', // GET → [{key,label}] (Input/research/*.csv, hidden by default)
 
+  // Web Push (allocation binary-signal-flip notifications). Text is composed
+  // server-side; the client only renders title/body verbatim (see src/push.js).
+  STOCKS_PUSH_VAPID_PATH:     '/api/stocks/push/vapid',     // GET → {publicKey}
+  STOCKS_PUSH_SUBSCRIBE_PATH: '/api/stocks/push/subscribe', // POST {subscription,scheme} upsert / DELETE {endpoint}
+  STOCKS_PUSH_SCHEME_PATH:    '/api/stocks/push/scheme',    // POST {endpoint,scheme} re-point an existing subscription
+  STOCKS_PUSH_STATUS_PATH:    '/api/stocks/push/status',    // GET ?endpoint=… → {enabled,scheme}
+  STOCKS_PUSH_TEST_PATH:      '/api/stocks/push/test',      // POST {endpoint} → send a canned test push
+
   // Abort a health check after this long to avoid long waits on unreachable
   // candidates while probeBase() races them.
   HEALTH_TIMEOUT_MS: 1500,
