@@ -105,7 +105,13 @@ function csvParse(str) {
 
 // ── Launch ───────────────────────────────────────────────────────────────────
 // --mobile — emulate the app's primary real-world device (phone, portrait).
-const VIEWPORT = args.mobile ? { width: 390, height: 844 } : { width: 1400, height: 1000 };
+// --vh=<px>/--vw=<px> — override the preset height/width, e.g. to simulate a
+// software keyboard eating most of the visual viewport (no headless browser
+// can raise a real keyboard, so this is the stand-in for that scenario).
+const VIEWPORT = {
+  width:  Number(args.vw) || (args.mobile ? 390 : 1400),
+  height: Number(args.vh) || (args.mobile ? 844 : 1000),
+};
 const browser = await chromium.launch({ headless: !HEADED });
 const context = await browser.newContext({
   viewport: VIEWPORT, ignoreHTTPSErrors: true,
@@ -293,6 +299,15 @@ if (args.toggle) {
   for (const sel of String(args.toggle).split(',').map(s => s.trim()).filter(Boolean)) {
     await page.click(sel).catch(() => {});
     await page.waitForTimeout(150);
+  }
+}
+// --dblclick="#some-sel" — double-click an element by raw CSS selector, for
+// dblclick-only affordances --toggle's single click can't reach (e.g. the
+// Portfolio exposure/currency cell editor popup).
+if (args.dblclick) {
+  for (const sel of String(args.dblclick).split(',').map(s => s.trim()).filter(Boolean)) {
+    await page.dblclick(sel).catch(() => {});
+    await page.waitForTimeout(200);
   }
 }
 // --select="#table-preset-sel=allocation,#currency-sel=USD" — set <select> values.

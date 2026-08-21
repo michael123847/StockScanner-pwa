@@ -28,14 +28,15 @@ node tools/inspect_pwa.mjs --list=Watchlist           # pick a list
 node tools/inspect_pwa.mjs --report=20260702_Portfolio.json
 node tools/inspect_pwa.mjs --tab=Allokation           # bottom-nav tab by label
 node tools/inspect_pwa.mjs --mobile                   # 390x844, touch, DPR 3
+node tools/inspect_pwa.mjs --mobile --vh=300          # short visual viewport (simulates a keyboard covering the rest)
 node tools/inspect_pwa.mjs --headed --wait=4000       # watch it live
 node tools/inspect_pwa.mjs --out=tools/final_backtest.png
 SS_OUTPUT=C:/Projects/StockScanner/Output node tools/inspect_pwa.mjs
 ```
 
 Interaction flags (all optional, applied in this order: report/list → tab →
-ticker → click → filter → toggle → select → type → scrollTo → reload →
-screenshot):
+ticker → click → filter → toggle → dblclick → select → type → scrollTo →
+reload → screenshot):
 
 | Flag | Meaning |
 |---|---|
@@ -43,6 +44,7 @@ screenshot):
 | `--ticker=DCUSAS.SW` | select in `#chart-ticker` |
 | `--click="14d,Kerzen"` | click buttons by visible text, in sequence |
 | `--toggle="#chk-dp,#chk-mllive"` | click by raw CSS selector (checkboxes) |
+| `--dblclick="#some-sel"` | double-click by raw CSS selector — for dblclick-only affordances (e.g. the Portfolio exposure/currency cell editor) that `--toggle`'s single click can't reach |
 | `--select="#table-preset-sel=backtest,#currency-sel=USD"` | set `<select>` values |
 | `--type="#pf-search-input=AAPL"` | fill an input |
 | `--scrollTo="#alloc-addcash-panel"` | scroll an element's bottom edge into view (native `scrollIntoView({block:'end'})`) — use when `--type`/`--click`'s minimal auto-scroll leaves a just-revealed panel straddling the viewport bottom |

@@ -433,19 +433,68 @@ function showEditPopup(tr) {
   popup.appendChild(expLabel); popup.appendChild(ccyLabel);
   popup.appendChild(asOfLabel); popup.appendChild(btns);
 
-  const rect = tr.getBoundingClientRect();
   popup.style.position = 'fixed';
-  popup.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 220)) + 'px';
   document.body.appendChild(popup);
+
   // Flip above the row when there isn't room below (e.g. a row near the bottom
   // of the viewport) -- fixed positioning means an off-viewport popup can never
   // be scrolled into reach, silently stranding the OK/Cancel buttons.
-  const popupHeight = popup.offsetHeight;
-  const top = (rect.bottom + 4 + popupHeight <= window.innerHeight)
-    ? rect.bottom + 4
-    : Math.max(8, rect.top - popupHeight - 4);
-  popup.style.top = top + 'px';
+  //
+  // Clamped against the VISUAL viewport (window.visualViewport), not the
+  // layout one (window.innerHeight/innerWidth): on Android Chrome the
+  // software keyboard shrinks the visual viewport but leaves the layout
+  // viewport untouched, so a one-shot placement computed here would run
+  // BEFORE the keyboard opens (it opens asynchronously, after focus() below)
+  // and decide there's room, and the keyboard then covers the button row.
+  // The visualViewport listeners wired below re-run place() once the
+  // keyboard actually resizes the visual viewport.
+  function place() {
+    // Re-read every time, not closed over: when the keyboard opens, the
+    // browser scrolls the focused input into view, which moves the row --
+    // a stale rect captured once would place every re-run against a
+    // position the row no longer occupies.
+    const rect = tr.getBoundingClientRect();
+    const vv    = window.visualViewport;
+    const vw    = vv ? vv.width     : window.innerWidth;
+    const vh    = vv ? vv.height    : window.innerHeight;
+    const vLeft = vv ? vv.offsetLeft : 0;
+    const vTop  = vv ? vv.offsetTop  : 0;
+
+    // Cap height to what's actually visible so a popup taller than the
+    // available space scrolls internally (see #pf-edit-popup's
+    // overflow-y:auto in style.css) instead of overflowing off-screen.
+    popup.style.maxHeight = Math.max(120, vh - 16) + 'px';
+
+    const popupHeight = popup.offsetHeight;
+    let top = (rect.bottom + 4 + popupHeight <= vTop + vh)
+      ? rect.bottom + 4
+      : Math.max(vTop + 8, rect.top - popupHeight - 4);
+    // The anchor row itself can sit outside the current visual viewport (the
+    // keyboard shrinks it without moving the row), so the flip-above branch
+    // above only clamps the LOWER bound -- nothing stops the popup from
+    // landing far below the visible area. Clamp the upper bound too, and let
+    // it win when both fight: a popup taller than the viewport must be flush
+    // to the top, not pushed off it. This makes the row-anchoring best-effort
+    // and on-screen guaranteed, which is the right priority for a dialog
+    // that holds the confirm button.
+    const maxTop = vTop + vh - popupHeight - 8;
+    top = Math.max(vTop + 8, Math.min(top, maxTop));
+    popup.style.top  = top + 'px';
+    popup.style.left = Math.max(vLeft + 8, Math.min(rect.left, vLeft + vw - 220)) + 'px';
+  }
+
+  place();
   expInput.focus(); expInput.select();
+
+  // Re-place when the visual viewport changes (keyboard open/close/resize,
+  // pinch-zoom pan) or the device rotates -- see the comment on place() above
+  // for why the initial placement alone isn't enough.
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+  }
+  window.addEventListener('orientationchange', place);
 
   function confirm() {
     const origAsOf = tr.dataset.asOf || '';
@@ -487,7 +536,15 @@ function showEditPopup(tr) {
     _state[_activeList].dirty = true;
     cleanup();
   }
-  function cleanup() { popup.remove(); document.removeEventListener('click', outsideHandler); }
+  function cleanup() {
+    popup.remove();
+    document.removeEventListener('click', outsideHandler);
+    if (vv) {
+      vv.removeEventListener('resize', place);
+      vv.removeEventListener('scroll', place);
+    }
+    window.removeEventListener('orientationchange', place);
+  }
   function outsideHandler(e) { if (!popup.contains(e.target)) cleanup(); }
 
   okBtn.addEventListener('click', confirm);
