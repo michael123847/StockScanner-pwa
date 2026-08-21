@@ -281,6 +281,144 @@ function switchSubtab(name) {
   refreshPortfolioMd();
 }
 
+// ---------- "Aktualisieren" → confirm → full scan, with watch mode ----------
+// #digest-refresh used to bind straight to loadDigest() (a cheap re-fetch of
+// the already-generated digest). It now asks first: OK triggers a full
+// nightly-equivalent scan of every list (POST run?all=1, mirrored server-side
+// off scheduleNightly()'s own code path); Abbrechen keeps the old cheap
+// reload so that capability isn't lost and no second button is needed.
+const PENDING_SCAN_KEY = 'pwa.stocks.pendingScan'; // pwa.stocks.* convention (currency/tablePreset)
+const SCAN_POLL_MS = 30000;
+
+let _scanWatching  = false;
+let _scanPollTimer = null;
+
+function setPendingScan(v) {
+  try { if (v) localStorage.setItem(PENDING_SCAN_KEY, '1'); else localStorage.removeItem(PENDING_SCAN_KEY); }
+  catch { /* localStorage unavailable -- watch mode still works for this session */ }
+}
+function isPendingScan() {
+  try { return localStorage.getItem(PENDING_SCAN_KEY) === '1'; } catch { return false; }
+}
+
+function setRefreshBtnRunning(running) {
+  const btn = $('#digest-refresh');
+  if (!btn) return;
+  if (running) {
+    if (!btn.dataset.origText) btn.dataset.origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Scan läuft…';
+  } else {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.origText || 'Aktualisieren';
+  }
+}
+
+// A running all-lists scan drains a queue: `running` alone briefly reads
+// false between two queued lists, which would fire the reload (and restore
+// the button) mid-run. Only `running === false && queued.length === 0`
+// means the whole job actually finished.
+async function pollScanStatus() {
+  try {
+    const r = await fetch(getActiveBase() + CONFIG.STOCKS_STATUS_PATH, {
+      headers: authHeaders(), cache: 'no-store', credentials: 'omit',
+    });
+    if (!r.ok) return;
+    const s = await r.json();
+    const done = s.running === false && Array.isArray(s.queued) && s.queued.length === 0;
+    if (done) {
+      stopWatchMode();
+      loadDigest();
+    }
+  } catch { /* transient network error -- the next poll (or visibilitychange) retries */ }
+}
+
+function onScanVisibilityChange() {
+  if (document.visibilityState === 'visible' && _scanWatching) pollScanStatus();
+}
+
+function startWatchMode() {
+  if (_scanWatching) return; // never stack multiple pollers
+  _scanWatching = true;
+  setPendingScan(true);
+  setRefreshBtnRunning(true);
+  document.addEventListener('visibilitychange', onScanVisibilityChange);
+  _scanPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') pollScanStatus();
+  }, SCAN_POLL_MS);
+  // Check once immediately too -- covers both the OK click itself and a
+  // resumed watch (app re-opened after the scan already finished offscreen).
+  pollScanStatus();
+}
+
+function stopWatchMode() {
+  _scanWatching = false;
+  setPendingScan(false);
+  setRefreshBtnRunning(false);
+  if (_scanPollTimer) { clearInterval(_scanPollTimer); _scanPollTimer = null; }
+  document.removeEventListener('visibilitychange', onScanVisibilityChange);
+}
+
+async function startAllScan() {
+  try {
+    const r = await fetch(getActiveBase() + CONFIG.STOCKS_RUN_PATH + '?all=1', {
+      method: 'POST', headers: authHeaders(), credentials: 'omit',
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    // Nothing actually started server-side -- don't strand the button in a
+    // running state for a scan that never began.
+    showToast('Scan konnte nicht gestartet werden.');
+    return;
+  }
+  startWatchMode();
+}
+
+// Centered confirm modal -- reuses the existing .pf-action-sheet.pf-move-modal
+// + .row-sheet-backdrop pattern from portfolio.js's move-ticker prompt rather
+// than adding new CSS.
+function openScanConfirm() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'row-sheet-backdrop';
+
+  const card = document.createElement('div');
+  card.className = 'pf-action-sheet pf-move-modal';
+
+  function onKey(e) { if (e.key === 'Escape') { close(); loadDigest(); } }
+  function close() { backdrop.remove(); card.remove(); document.removeEventListener('keydown', onKey); }
+
+  const title = document.createElement('div');
+  title.className = 'pf-move-title';
+  title.innerHTML = '<b>Nightly-Scan starten?</b>';
+  card.appendChild(title);
+
+  const body = document.createElement('p');
+  body.style.cssText = 'font-size:13px;color:var(--text-dim);margin:0 0 12px;line-height:1.4';
+  body.textContent = 'Alle Listen werden neu gescannt — das dauert mehrere Stunden. Abbrechen lädt nur den Digest neu.';
+  card.appendChild(body);
+
+  const row = document.createElement('div');
+  row.className = 'pf-move-row';
+  row.style.cssText = 'border-top:none;justify-content:flex-end';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Abbrechen';
+  cancelBtn.addEventListener('click', () => { close(); loadDigest(); });
+
+  const okBtn = document.createElement('button');
+  okBtn.textContent = 'OK';
+  okBtn.addEventListener('click', () => { close(); startAllScan(); });
+
+  row.appendChild(cancelBtn); row.appendChild(okBtn);
+  card.appendChild(row);
+
+  backdrop.addEventListener('click', () => { close(); loadDigest(); });
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(backdrop);
+  document.body.appendChild(card);
+}
+
 export function initDigest() {
   $('#dtab-digest')?.addEventListener('click', () => switchSubtab('digest'));
   $('#dtab-alloc')?.addEventListener('click', () => switchSubtab('alloc'));
@@ -289,7 +427,12 @@ export function initDigest() {
   if (savedSubtab === 'alloc') switchSubtab('alloc');
   else refreshPortfolioMd();   // default digest sub-tab: switchSubtab isn't called, so build/show here
 
-  $('#digest-refresh')?.addEventListener('click', loadDigest);
+  $('#digest-refresh')?.addEventListener('click', openScanConfirm);
+
+  // A scan started before the app was closed/reloaded must still trigger the
+  // reload once it finishes -- resume watch mode rather than assuming
+  // nothing is running.
+  if (isPendingScan()) startWatchMode();
 
   // Copy the raw Markdown exactly as shown (icon-only overlay button; same
   // confirmation idiom as the .copy-btn instances elsewhere -- see
