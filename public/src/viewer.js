@@ -1705,13 +1705,31 @@ function showExplainPopup(anchorEl, text){
   setTimeout(()=>document.addEventListener('click',dismiss,true),0);
 }
 
+// True once metrics have loaded AND the server has told us the deployed
+// model no longer matches backtest_metrics.json's model_id (see
+// metrics_freshness.js / GET /api/stocks/metrics). `null`/absent (older
+// server, or the server couldn't check) renders exactly as the current case
+// — only an explicit `false` is "known stale".
+function metricsStale(){
+  return !!(metricsData && metricsData.freshness && metricsData.freshness.model_current===false);
+}
+
 function renderHead(cols){
   cols=cols||COLS;
+  const stale = cols===BACKTEST_COLS && metricsStale();
   const tr=document.createElement('tr');
   cols.forEach((c)=>{
     const th=document.createElement('th');
     const key = c[0];
-    th.textContent = key + (sortKey===key? (sortDir>0?' ▲':' ▼'):'');
+    const label = key + (sortKey===key? (sortDir>0?' ▲':' ▼'):'');
+    // Sticky first column (Ticker, see style.css th:first-child) stays visible
+    // at any scroll position, so the staleness badge lives there once, rather
+    // than repeating on every metric column.
+    if(stale && key==='Ticker'){
+      th.innerHTML = `${esc(label)} <span class="badge-2x" title="Deployed Modell weicht vom Modell ab, mit dem diese Backtest-Kennzahlen berechnet wurden — Werte evtl. veraltet">Modell veraltet</span>`;
+    } else {
+      th.textContent = label;
+    }
     const desc = explainFor(key);
     if (desc) th.title = desc;   // desktop hover help
     th.onclick=()=>{ if(sortKey===key) sortDir=-sortDir; else {sortKey=key; sortDir=1;} if(DATA) renderOverview(); };
@@ -1827,6 +1845,12 @@ function openRowSheet(ticker){
   const backtestHtml = btRow ? BACKTEST_COLS.slice(1)
     .map(c=>`<div class="rs-metric"><span class="rs-metric-label">${esc(c[0])}</span><span class="rs-metric-value">${c[2](c[1](r),r)}</span></div>`)
     .join('') : '';
+  // Same staleness badge as the Übersicht Backtest header (renderHead) --
+  // metricsData.freshness.model_current===false means the deployed model no
+  // longer matches the model these backtest numbers were computed from.
+  const backtestStaleBadge = (btRow && metricsStale())
+    ? ' <span class="badge-2x" title="Deployed Modell weicht vom Modell ab, mit dem diese Backtest-Kennzahlen berechnet wurden — Werte evtl. veraltet">Modell veraltet</span>'
+    : '';
   // Order-execution hint: only present when the report carries one (active Buy/Sell
   // on the production ML signal) -- see functions/order_hint.py. Same green/red
   // buy/sell coloring as the Order column in Übersicht (orderCell/orderDirection).
@@ -1867,7 +1891,7 @@ function openRowSheet(ticker){
       <div class="rs-metrics">${metricsHtml}</div>
     </div>
     ${backtestHtml ? `<div class="row-sheet-section">
-      <div class="row-sheet-section-label">Backtest (Ø deployed model)</div>
+      <div class="row-sheet-section-label">Backtest (Ø deployed model)${backtestStaleBadge}</div>
       <div class="rs-metrics">${backtestHtml}</div>
     </div>` : ''}
     ${orderHtml}
