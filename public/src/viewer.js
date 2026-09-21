@@ -330,7 +330,7 @@ function buildSchemeTargets(schemeKey){
   if(positionsBlock){
     for(const p of (positionsBlock.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
-        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null}, p.equivalents||[]);
+        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null, cost: p.cost||null}, p.equivalents||[]);
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
     cashIsin = positionsBlock.cash_isin || null;
@@ -341,7 +341,7 @@ function buildSchemeTargets(schemeKey){
       // producer: for leveraged sleeves this is the REAL 1x twin's live
       // signal/levels, not the synthetic 2x series — see alloc_live.py).
       add(s.primary_ticker||s.sleeve, s.sleeve, s.hold_primary_pct||0,
-        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null}, s.equivalents||[]);
+        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null, cost: s.cost||null}, s.equivalents||[]);
       if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0){
         // shift_1x_ticker is a display label ("URTH (1x World)") -- the actual
         // matchable ticker is its first token; using the full label as the map
@@ -672,6 +672,28 @@ function equivalentSubLine(r){
   return `<div class="cell-sub">hält ${esc(r.ticker)} für ${esc(r.meta.schemeTicker)}-Sleeve</div>`;
 }
 
+// Estimated real broker ticket cost for a recommended trade row, from the leg's
+// `cost` payload field ({fixed, prop_bps, currency}, see scripts/alloc_live.py /
+// functions/transaction_costs.py) and this row's own trade notional -- e.g.
+// "≈ CHF 15 · 1.0%". `cost.fixed`/`cost.prop_bps` are quoted in `cost.currency`
+// (e.g. USD for the ETH leg) while `r.trade` is always CHF, so the notional is
+// converted into the quote currency, the schedule applied there, and the result
+// converted back -- everything on screen stays CHF, no currency mixing. Omitted
+// entirely (not a placeholder) when the leg carries no cost quote or the fx rate
+// needed to convert it isn't available, so we never show an invented number.
+function costSubLine(r, fx){
+  const cost = r.meta && r.meta.cost;
+  const notionalChf = Math.abs(r.trade);
+  if(!cost || !isNum(cost.fixed) || !isNum(cost.prop_bps) || !(notionalChf > 0)) return '';
+  const rate = (cost.currency === 'CHF' || !cost.currency) ? 1 : toCHF(1, cost.currency, fx);
+  if(!isNum(rate) || rate <= 0) return '';
+  const notionalQc = notionalChf / rate;
+  const estQc = cost.fixed + notionalQc * (cost.prop_bps / 1e4);
+  const estChf = estQc * rate;
+  const pct = estChf / notionalChf * 100;
+  return `<div class="cell-sub">&asymp; CHF ${estChf.toFixed(0)} &middot; ${pct.toFixed(1)}%</div>`;
+}
+
 // Same green/red convention as the Übersicht Order column (orderCell/orderDirection).
 function allocOrderCell(oh, dir){
   if(!oh) return '<span class="num">—</span>';
@@ -700,7 +722,7 @@ function renderTradesHtml(result){
   const rows = result.rows.map((r,i) => {
     const tradeCls = r.trade>0?'pos':(r.trade<0?'neg':'');
     return `<tr class="alloc-trade-row" data-kind="trade" data-idx="${i}">
-    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div>${equivalentSubLine(r)}</td>
+    <td style="text-align:left">${esc(r.name||r.ticker)}<div class="cell-sub">${esc(r.ticker)}</div>${equivalentSubLine(r)}${costSubLine(r, result.fx)}</td>
     <td class="wide-col">${convertCHF(r.curVal, currency, result.fx)}</td>
     <td class="wide-col">${convertCHF(r.targetVal, currency, result.fx)}</td>
     <td class="wide-col num ${tradeCls}">${convertCHF(r.trade, currency, result.fx)}</td>

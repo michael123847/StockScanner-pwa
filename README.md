@@ -81,4 +81,7 @@ testing works best on the same machine/network where `server.local` resolves and
 > no server change is needed. A *different* account or a custom domain would require adding that
 > origin to the Caddyfile.
 
-Bump `CONFIG.APP_VERSION` (config.js) and `VERSION` (sw.js) together on each deploy.
+Bump `self.__APP_VERSION` in `version.js` on each deploy — the SINGLE source of truth,
+loaded by both `sw.js` (`importScripts('version.js')`) and `config.js` (reads
+`globalThis.__APP_VERSION`). Do not add a separate `VERSION` to `sw.js` or set
+`CONFIG.APP_VERSION` directly in `config.js`.
