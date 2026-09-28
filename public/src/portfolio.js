@@ -381,6 +381,16 @@ function buildRow({ ticker = '', name = '', country = '', exposure = '', currenc
   return tr;
 }
 
+// env(safe-area-inset-bottom) in px -- only readable through a computed style.
+function safeAreaBottom() {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;visibility:hidden;padding-bottom:env(safe-area-inset-bottom,0px)';
+  document.body.appendChild(probe);
+  const v = parseFloat(getComputedStyle(probe).paddingBottom) || 0;
+  probe.remove();
+  return v;
+}
+
 function showEditPopup(tr) {
   const old = document.getElementById('pf-edit-popup');
   if (old) old.remove();
@@ -397,6 +407,9 @@ function showEditPopup(tr) {
   expLabel.textContent = 'Exposure (per Stichtag)';
   const expInput = document.createElement('input');
   expInput.type = 'text'; expInput.inputMode = 'decimal';
+  // Keyboard action key = "done" (was "Weiter"/next), so it fires the Enter
+  // handler below and confirms -- a way to OK that nothing can cover.
+  expInput.enterKeyHint = 'done';
   expInput.value = expSpan ? (expSpan.dataset.csvValue || '') : '';
   expLabel.appendChild(expInput);
 
@@ -430,8 +443,13 @@ function showEditPopup(tr) {
   const cancelBtn = document.createElement('button'); cancelBtn.textContent = '✕'; cancelBtn.type = 'button';
   btns.appendChild(okBtn); btns.appendChild(cancelBtn);
 
+  // Buttons FIRST (sticky top, see .pf-ep-btns in style.css): the bottom of the
+  // popup can be covered by things no viewport API reports -- Chrome's autofill
+  // strip above the keyboard overlays the page without shrinking visualViewport
+  // (seen 2026-09-28, v1.8.44) -- so the confirm button must not live there.
+  popup.appendChild(btns);
   popup.appendChild(expLabel); popup.appendChild(ccyLabel);
-  popup.appendChild(asOfLabel); popup.appendChild(btns);
+  popup.appendChild(asOfLabel);
 
   popup.style.position = 'fixed';
   document.body.appendChild(popup);
@@ -471,7 +489,10 @@ function showEditPopup(tr) {
     // report the restored full height while offsetTop is still the stale
     // keyboard-open pan -- vTop + vh then points below the screen and the
     // clamp below would push the button row off it (seen on row 3, 2026-09-28).
-    const visBottom = Math.min(vTop + vh, window.innerHeight);
+    // Also minus the bottom safe-area inset: the app is edge-to-edge
+    // (viewport-fit=cover), so innerHeight extends under the Android system
+    // nav bar, which covered the popup's bottom row when clamped flush to it.
+    const visBottom = Math.min(vTop + vh, window.innerHeight - safeAreaBottom());
 
     const popupHeight = popup.offsetHeight;
     let top = (rect.bottom + 4 + popupHeight <= visBottom)
