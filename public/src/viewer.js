@@ -360,7 +360,26 @@ function buildSchemeTargets(schemeKey){
   // B&H legs (see the producer's note: "Fund/Gold/Bonds sind Buy&Hold (±5pp
   // Rebalance-Band)") -- absent/0 means no band.
   const band = isNum(block.rebalance_band_pp) ? block.rebalance_band_pp : 0;
-  return {targets, cashPct, cashIsin, band};
+  return {targets, cashPct, cashIsin, band, cashTickers: buildHeldCashTickerSet(block)};
+}
+
+// Held tickers that ARE the scheme's cash/money-market leg -- matched against
+// the block's cash_isin/cash_equivalents (e.g. ['CH1415798458', 'CHFON']) by
+// ticker, by ticker without its exchange suffix (CHFON.SW -> CHFON), or by the
+// holding's isin column. Without this a held CHFON.SW looked like an
+// out-of-scheme position: a full-sell row plus a separate full CASH buy row
+// instead of one net cash difference.
+function buildHeldCashTickerSet(block){
+  const ids = new Set([block.cash_isin, ...(Array.isArray(block.cash_equivalents) ? block.cash_equivalents : [])]
+    .filter(Boolean).map(s => String(s).trim()));
+  const set = new Set();
+  const tickers = (portfolioHoldingsData && portfolioHoldingsData.tickers) || [];
+  for(const t of tickers){
+    if(!t.ticker) continue;
+    const isin = t.holding && t.holding.isin ? String(t.holding.isin).trim() : '';
+    if(ids.has(t.ticker) || ids.has(t.ticker.split('.')[0]) || (isin && ids.has(isin))) set.add(t.ticker);
+  }
+  return set;
 }
 
 // ISIN heuristic (ISO 6166: 2 letters + 9 alnum + 1 check digit) -- the scheme/
@@ -471,8 +490,24 @@ function computeSchemeTrades(schemeKey){
         meta: rowMeta, orderHint: localizeOrderHint(hint, dir, held && held.priceCurrency)});
     }
   }
+  // The cash leg nets against held money-market positions (see
+  // buildHeldCashTickerSet) -- they are the leg, not out-of-scheme sells.
+  const cashHeld = [...byTicker].filter(([tk]) => built.cashTickers.has(tk));
+  const cashCur = cashHeld.reduce((s, [, h]) => s + h.value, 0);
+  cashHeld.forEach(([tk]) => seen.add(tk));
   const cashTarget = total * built.cashPct / 100;
-  if(passes(cashTarget)) rows.push({ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: 0, trade: cashTarget, meta: null, orderHint: null, isin: built.cashIsin});
+  const cashTrade = cashTarget - cashCur;
+  if(passes(Math.abs(cashTrade))){
+    // Exactly one held vehicle: trade that real instrument (its own order price);
+    // otherwise the generic CASH row.
+    const one = cashHeld.length === 1 ? cashHeld[0][1] : null;
+    const dir = cashTrade > 0 ? 'buy' : 'sell';
+    rows.push(one
+      ? {ticker: cashHeld[0][0], name: one.name, targetVal: cashTarget, curVal: cashCur, trade: cashTrade,
+         meta: one.levels ? {levels: one.levels, ml_signal: one.ml_signal, twin: null} : null,
+         orderHint: localizeOrderHint(one.orderHints ? one.orderHints[dir] : null, dir, one.priceCurrency), isin: built.cashIsin}
+      : {ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: cashCur, trade: cashTrade, meta: null, orderHint: null, isin: built.cashIsin});
+  }
   for(const [tk, {value, name, levels, ml_signal, orderHints, priceCurrency}] of byTicker){
     if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
       meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell', priceCurrency)});
@@ -541,9 +576,12 @@ function computeAddCash(schemeKey, cashChf){
       shortfall: Math.max(0, targetVal - curVal)});
   }
   if(built.cashPct > 0){
-    legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: 0, meta: null,
+    // Held money-market positions count toward the cash leg (buildHeldCashTickerSet).
+    let cashCur = 0;
+    for(const [tk, h] of byTicker) if(built.cashTickers.has(tk)) cashCur += h.value;
+    legs.push({ticker: 'CASH', name: 'Cash / Geldmarkt', pct: built.cashPct, curVal: cashCur, meta: null,
       orderHints: null, priceCurrency: null, isin: built.cashIsin,
-      shortfall: Math.max(0, newTotal * built.cashPct / 100)});
+      shortfall: Math.max(0, newTotal * built.cashPct / 100 - cashCur)});
   }
 
   const sumShortfall = legs.reduce((s, l) => s + l.shortfall, 0);

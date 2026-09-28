@@ -465,8 +465,16 @@ function showEditPopup(tr) {
     // overflow-y:auto in style.css) instead of overflowing off-screen.
     popup.style.maxHeight = Math.max(120, vh - 16) + 'px';
 
+    // Bottom of the visible area, also capped at the LAYOUT viewport: a fixed
+    // element is never visible below innerHeight. Needed because on Android
+    // Chrome the visualViewport 'resize' fired when the keyboard CLOSES can
+    // report the restored full height while offsetTop is still the stale
+    // keyboard-open pan -- vTop + vh then points below the screen and the
+    // clamp below would push the button row off it (seen on row 3, 2026-09-28).
+    const visBottom = Math.min(vTop + vh, window.innerHeight);
+
     const popupHeight = popup.offsetHeight;
-    let top = (rect.bottom + 4 + popupHeight <= vTop + vh)
+    let top = (rect.bottom + 4 + popupHeight <= visBottom)
       ? rect.bottom + 4
       : Math.max(vTop + 8, rect.top - popupHeight - 4);
     // The anchor row itself can sit outside the current visual viewport (the
@@ -477,7 +485,7 @@ function showEditPopup(tr) {
     // to the top, not pushed off it. This makes the row-anchoring best-effort
     // and on-screen guaranteed, which is the right priority for a dialog
     // that holds the confirm button.
-    const maxTop = vTop + vh - popupHeight - 8;
+    const maxTop = visBottom - popupHeight - 8;
     top = Math.max(vTop + 8, Math.min(top, maxTop));
     popup.style.top  = top + 'px';
     popup.style.left = Math.max(vLeft + 8, Math.min(rect.left, vLeft + vw - 220)) + 'px';
@@ -489,12 +497,21 @@ function showEditPopup(tr) {
   // Re-place when the visual viewport changes (keyboard open/close/resize,
   // pinch-zoom pan) or the device rotates -- see the comment on place() above
   // for why the initial placement alone isn't enough.
+  // Each event places immediately AND once more after the viewport settles:
+  // offsetTop/height can update in separate steps around a keyboard transition
+  // (see visBottom in place()), and the event for the final step may never fire.
+  let settleTimer = 0;
+  function onViewportChange() {
+    place();
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(place, 300);
+  }
   const vv = window.visualViewport;
   if (vv) {
-    vv.addEventListener('resize', place);
-    vv.addEventListener('scroll', place);
+    vv.addEventListener('resize', onViewportChange);
+    vv.addEventListener('scroll', onViewportChange);
   }
-  window.addEventListener('orientationchange', place);
+  window.addEventListener('orientationchange', onViewportChange);
 
   function confirm() {
     const origAsOf = tr.dataset.asOf || '';
@@ -539,11 +556,12 @@ function showEditPopup(tr) {
   function cleanup() {
     popup.remove();
     document.removeEventListener('click', outsideHandler);
+    clearTimeout(settleTimer);
     if (vv) {
-      vv.removeEventListener('resize', place);
-      vv.removeEventListener('scroll', place);
+      vv.removeEventListener('resize', onViewportChange);
+      vv.removeEventListener('scroll', onViewportChange);
     }
-    window.removeEventListener('orientationchange', place);
+    window.removeEventListener('orientationchange', onViewportChange);
   }
   function outsideHandler(e) { if (!popup.contains(e.target)) cleanup(); }
 
