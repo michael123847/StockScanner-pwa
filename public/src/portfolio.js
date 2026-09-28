@@ -381,6 +381,10 @@ function buildRow({ ticker = '', name = '', country = '', exposure = '', currenc
   return tr;
 }
 
+// Estimated height of Chrome's autofill strip above the Android keyboard
+// (~61 CSS px measured from a screenshot, plus margin) -- no API reports it.
+const KEYBOARD_STRIP_PX = 64;
+
 // env(safe-area-inset-bottom) in px -- only readable through a computed style.
 function safeAreaBottom() {
   const probe = document.createElement('div');
@@ -443,13 +447,8 @@ function showEditPopup(tr) {
   const cancelBtn = document.createElement('button'); cancelBtn.textContent = '✕'; cancelBtn.type = 'button';
   btns.appendChild(okBtn); btns.appendChild(cancelBtn);
 
-  // Buttons FIRST (sticky top, see .pf-ep-btns in style.css): the bottom of the
-  // popup can be covered by things no viewport API reports -- Chrome's autofill
-  // strip above the keyboard overlays the page without shrinking visualViewport
-  // (seen 2026-09-28, v1.8.44) -- so the confirm button must not live there.
-  popup.appendChild(btns);
   popup.appendChild(expLabel); popup.appendChild(ccyLabel);
-  popup.appendChild(asOfLabel);
+  popup.appendChild(asOfLabel); popup.appendChild(btns);
 
   popup.style.position = 'fixed';
   document.body.appendChild(popup);
@@ -492,7 +491,14 @@ function showEditPopup(tr) {
     // Also minus the bottom safe-area inset: the app is edge-to-edge
     // (viewport-fit=cover), so innerHeight extends under the Android system
     // nav bar, which covered the popup's bottom row when clamped flush to it.
-    const visBottom = Math.min(vTop + vh, window.innerHeight - safeAreaBottom());
+    // While the keyboard is open, keep a further KEYBOARD_STRIP_PX clear above
+    // it: Chrome's autofill strip (key/card/address icons) overlays the page
+    // there WITHOUT shrinking visualViewport, and covered the button row
+    // (seen 2026-09-28, v1.8.44). Keyboard "open" = visual viewport clearly
+    // shorter than the layout one.
+    const keyboardOpen = vv && vv.height < window.innerHeight - 150;
+    const visBottom = Math.min(vTop + vh - (keyboardOpen ? KEYBOARD_STRIP_PX : 0),
+                               window.innerHeight - safeAreaBottom());
 
     const popupHeight = popup.offsetHeight;
     let top = (rect.bottom + 4 + popupHeight <= visBottom)
