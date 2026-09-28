@@ -330,7 +330,8 @@ function buildSchemeTargets(schemeKey){
   if(positionsBlock){
     for(const p of (positionsBlock.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
-        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null, cost: p.cost||null}, p.equivalents||[]);
+        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null, cost: p.cost||null,
+         rebalance: p.rebalance || null}, p.equivalents||[]);
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
     cashIsin = positionsBlock.cash_isin || null;
@@ -479,11 +480,15 @@ function computeSchemeTrades(schemeKey){
     const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
     const rowMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
-    // The band applies to EVERY held leg, ML-timed ones included (user ruling
-    // 2026-09-28: show only the trades required to stay within the band). One
-    // exception: a leg whose target is 0 (signal off / de-risk exit) always
-    // trades in full -- the band must never swallow an exit.
-    const inBand = built.band > 0 && curVal > 0 && pct > 0 && Math.abs(trade) / total * 100 < built.band;
+    // The band applies to every held leg EXCEPT one explicitly flagged
+    // `rebalance: 'floor'` by the producer (QLD/ETH, v1.8.48 -- 2026-09-28
+    // ruling: "I cannot trade on it every day" band-eats their continuous
+    // de-risk steps, so they trade on the CHF/dust floor below instead, never
+    // the band). Another exception, unconditional: a leg whose target is 0
+    // (signal off / de-risk exit) always trades in full -- the band must
+    // never swallow an exit.
+    const isFloorLeg = meta && meta.rebalance === 'floor';
+    const inBand = !isFloorLeg && built.band > 0 && curVal > 0 && pct > 0 && Math.abs(trade) / total * 100 < built.band;
     if(inBand) continue;
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
@@ -788,7 +793,7 @@ function renderTradesHtml(result){
     }),
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
       werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft.${
-      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen (auch getimte) — außer ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
+      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen — außer QLD/ETH (handeln auf der CHF-/Dust-Schwelle statt auf dem Band, kein tägliches Trading) und ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
     } Trades &lt;0.5% oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
@@ -2099,7 +2104,9 @@ function renderHybridHtml(h){
     </div>
     <div class="alloc-totals">
       <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt (SARON)</span>
-      <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band</span>
+      <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band${
+        (h.positions||[]).some(p=>p.rebalance==='floor') ? ' (QLD/ETH: CHF-/Dust-Schwelle statt Band)' : ''
+      }</span>
     </div>
     ${schemeHintsHtml(h)}
   `;
