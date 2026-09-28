@@ -427,9 +427,9 @@ function localizeOrderHint(hint, direction, currency){
 // portfolio has never matched the scheme (large trades) or already does
 // (small drift-correction trades) — there is no separate "rebalance mode".
 // The scheme's rebalance_band_pp additionally suppresses drift corrections on
-// already-held B&H legs (no ml_signal) while |drift| < band — drift within the
-// band is deliberate holding, not a trade signal. ML-timed legs are exempt: a
-// conviction-driven target change is the strategy speaking, never band-eaten.
+// every already-held leg (B&H and ML-timed alike) while |drift| < band — drift
+// within the band is deliberate holding, not a trade signal. Exception: a leg
+// whose target is 0 (signal off) is always exited in full, never band-eaten.
 function computeSchemeTrades(schemeKey){
   const built = buildSchemeTargets(schemeKey);
   const holdings = portfolioHoldingsData;
@@ -479,10 +479,12 @@ function computeSchemeTrades(schemeKey){
     const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
     const rowMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
-    // Band check uses the SCHEME's own meta (stance), not the holding's report
-    // signal: B&H legs carry no ml_signal in the scheme JSON, timed legs do.
-    const bandHeld = built.band > 0 && curVal > 0 && !(meta && meta.ml_signal);
-    if(bandHeld && Math.abs(trade) / total * 100 < built.band) continue;
+    // The band applies to EVERY held leg, ML-timed ones included (user ruling
+    // 2026-09-28: show only the trades required to stay within the band). One
+    // exception: a leg whose target is 0 (signal off / de-risk exit) always
+    // trades in full -- the band must never swallow an exit.
+    const inBand = built.band > 0 && curVal > 0 && pct > 0 && Math.abs(trade) / total * 100 < built.band;
+    if(inBand) continue;
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
       const hint = held && held.orderHints ? held.orderHints[dir] : null;
@@ -750,7 +752,7 @@ let _lastWithdrawalResult = null;
 function renderTradesHtml(result){
   _lastTradesResult = result;
   if(!result || !result.rows.length){
-    const bandPart = result && result.band > 0 ? `B&amp;H-Abweichungen &le; &plusmn;${result.band}pp, ` : '';
+    const bandPart = result && result.band > 0 ? `alle Abweichungen &lt; &plusmn;${result.band}pp, ` : '';
     return `<p class="hint alloc-hint">Portfolio bereits deckungsgleich mit diesem Schema (${bandPart}keine Trades &gt; 0.5% oder &gt;1000 CHF).</p>`;
   }
   const currency = getCurrency();
@@ -785,8 +787,9 @@ function renderTradesHtml(result){
       result.excludedHeld.length ? `, ohne ${result.excludedHeld.map(esc).join(', ')} (input/Portfolio_exclude.csv — manuell verwaltet, nie Teil des Trade-Vorschlags)` : ''
     }),
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
-      werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft. Trades &lt;0.5% oder
-      &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
+      werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft.${
+      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen (auch getimte) — außer ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
+    } Trades &lt;0.5% oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
 
