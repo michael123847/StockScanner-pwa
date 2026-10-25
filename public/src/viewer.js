@@ -481,9 +481,9 @@ function computeSchemeTrades(schemeKey){
     const rowMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     // The band applies to every held leg EXCEPT one explicitly flagged
-    // `rebalance: 'floor'` by the producer (QLD/ETH, v1.8.48 -- 2026-09-28
-    // ruling: "I cannot trade on it every day" band-eats their continuous
-    // de-risk steps, so they trade on the CHF/dust floor below instead, never
+    // `rebalance: 'floor'` by the producer (QLD only since 2026-10-25, was QLD/ETH at v1.8.48 -- 2026-09-28
+    // ruling: "I cannot trade on it every day" band-eats its continuous
+    // de-risk steps, so it trades on the CHF/dust floor below instead, never
     // the band). Another exception, unconditional: a leg whose target is 0
     // (signal off / de-risk exit) always trades in full -- the band must
     // never swallow an exit.
@@ -793,7 +793,7 @@ function renderTradesHtml(result){
     }),
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
       werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft.${
-      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen — außer QLD/ETH (handeln auf der CHF-/Dust-Schwelle statt auf dem Band, kein tägliches Trading) und ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
+      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen — außer QLD (handelt auf der CHF-/Dust-Schwelle statt auf dem Band, kein tägliches Trading) und ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
     } Trades &lt;0.5% oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
@@ -2105,7 +2105,7 @@ function renderHybridHtml(h){
     <div class="alloc-totals">
       <span><b>${fPct((h.cash_money_market_pct||0)/100)}</b> CHF Geldmarkt (SARON)</span>
       <span>±${esc(h.rebalance_band_pp!=null?h.rebalance_band_pp:'')}pp Rebalance-Band${
-        (h.positions||[]).some(p=>p.rebalance==='floor') ? ' (QLD/ETH: CHF-/Dust-Schwelle statt Band)' : ''
+        (h.positions||[]).some(p=>p.rebalance==='floor') ? ' (QLD: CHF-/Dust-Schwelle statt Band)' : ''
       }</span>
     </div>
     ${schemeHintsHtml(h)}
