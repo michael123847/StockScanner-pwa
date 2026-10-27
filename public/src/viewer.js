@@ -20,7 +20,8 @@ const $ = s => document.querySelector(s);
 const COL = {
   close:'#4ea1ff', ma50:'#ff9f40', ma200:'#ff5c5c',
   fib:['#b07cff','#9b7653','#e377c2','#9aa0aa'],
-  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', recM165:'#c77dff', recRaw:'#ffb800', rsi:'#4ea1ff'
+  recF:'#4ea1ff', recO:'#2ecc71', recM:'#ff5c5c', recMConv:'#ff9a9a', recM165:'#c77dff', recM165Conv:'#dcb8ff',
+  recRaw:'#ffb800', rsi:'#4ea1ff'
 };
 let DATA=null, ROWS=[], sortKey='name', sortDir=1, selected=null, viewLen=Infinity, hoverIdx=null;
 
@@ -301,8 +302,18 @@ function buildSchemeTargets(schemeKey){
   const isinMap = buildIsinAliasMap();
   const heldSet = buildHeldTickerSet();
   const targets = new Map(); // ticker -> {name, pct, meta:{levels, ml_signal, twin, isin, viaProxy, viaEquivalent, schemeTicker}}
+  // Timed legs the producer sizes to 0 because their ML signal is off (signal_state 0 /
+  // ml_signal 'Sell'): an EXIT, not an absent leg. A held position in one always gets
+  // the market ML-off-exit hint (computeSchemeTrades), whatever the held ticker's own
+  // report order_hints say.
+  const exits = new Set();
   const add = (originalTk, name, pct, meta, equivalents) => {
-    if(!pct) return;
+    if(!pct){
+      if(meta && (meta.signal_state === 0 || meta.ml_signal === 'Sell')){
+        exits.add(resolveAliasedTicker(originalTk, proxyMap, isinMap, equivalents, heldSet).ticker);
+      }
+      return;
+    }
     const {ticker: tk, viaProxy, viaEquivalent} = resolveAliasedTicker(originalTk, proxyMap, isinMap, equivalents, heldSet);
     // Preserve the scheme's own (pre-alias) ticker as the ISIN, when it looks like
     // one -- resolveAliasedTicker() maps it to whatever ticker Portfolio.csv holds
@@ -330,8 +341,8 @@ function buildSchemeTargets(schemeKey){
   if(positionsBlock){
     for(const p of (positionsBlock.positions||[])){
       add(p.ticker, p.name, isNum(p.hold_now_pct) ? p.hold_now_pct : (p.weight_pct||0),
-        {levels: p.levels||null, ml_signal: p.ml_signal||null, twin: null, cost: p.cost||null,
-         rebalance: p.rebalance || null}, p.equivalents||[]);
+        {levels: p.levels||null, ml_signal: p.ml_signal||null, signal_state: isNum(p.signal_state) ? p.signal_state : null,
+         twin: null, cost: p.cost||null, rebalance: p.rebalance || null}, p.equivalents||[]);
     }
     cashPct += positionsBlock.cash_money_market_pct||0;
     cashIsin = positionsBlock.cash_isin || null;
@@ -342,7 +353,8 @@ function buildSchemeTargets(schemeKey){
       // producer: for leveraged sleeves this is the REAL 1x twin's live
       // signal/levels, not the synthetic 2x series — see alloc_live.py).
       add(s.primary_ticker||s.sleeve, s.sleeve, s.hold_primary_pct||0,
-        {levels: s.levels||null, ml_signal: s.ml_signal||null, twin: s.shift_1x_ticker||null, cost: s.cost||null}, s.equivalents||[]);
+        {levels: s.levels||null, ml_signal: s.ml_signal||null, signal_state: isNum(s.signal_state) ? s.signal_state : null,
+         twin: s.shift_1x_ticker||null, cost: s.cost||null}, s.equivalents||[]);
       if(s.shift_1x_ticker && (s.hold_1x_pct||0) > 0){
         // shift_1x_ticker is a display label ("URTH (1x World)") -- the actual
         // matchable ticker is its first token; using the full label as the map
@@ -361,7 +373,7 @@ function buildSchemeTargets(schemeKey){
   // B&H legs (see the producer's note: "Fund/Gold/Bonds sind Buy&Hold (±5pp
   // Rebalance-Band)") -- absent/0 means no band.
   const band = isNum(block.rebalance_band_pp) ? block.rebalance_band_pp : 0;
-  return {targets, cashPct, cashIsin, band, cashTickers: buildHeldCashTickerSet(block)};
+  return {targets, exits, cashPct, cashIsin, band, cashTickers: buildHeldCashTickerSet(block)};
 }
 
 // Held tickers that ARE the scheme's cash/money-market leg -- matched against
@@ -419,6 +431,17 @@ function localizeOrderHint(hint, direction, currency){
   }
   return {type: hint.type, price: hint.price, currency: currency || null,
     rationale: ORDER_HINT_REASON_DE[hint.reason](hint.price, currency)};
+}
+
+// ML-off exit: a sell of a leg whose ML signal is off (state 0 / 'Sell') is a de-risk
+// exit and never waits on a limit (scripts/backtest_order_hint.py: 16.8% of limit
+// exits never filled through a >=5% adverse move). Forces the market hint at the last
+// close regardless of the held ticker's own report order_hints (those follow the
+// scan's per-ticker signal, which can differ from the allocation producer's state).
+// Returns null (-> placeholder text) when there is no close.
+function exitOrderHint(levels){
+  const c = levels && isNum(levels.close) ? levels.close : null;
+  return c == null ? null : {type:'market', price:c, reason:'ml_off_exit'};
 }
 
 // Recommended trades to move the WHOLE current portfolio (Input/Portfolio.csv,
@@ -492,7 +515,9 @@ function computeSchemeTrades(schemeKey){
     if(inBand) continue;
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
-      const hint = held && held.orderHints ? held.orderHints[dir] : null;
+      const forceExit = dir === 'sell' && meta && meta.ml_signal === 'Sell';
+      const hint = forceExit ? exitOrderHint(held && held.levels)
+        : (held && held.orderHints ? held.orderHints[dir] : null);
       rows.push({ticker: tk, name: (held||{}).name || name, targetVal, curVal, trade,
         meta: rowMeta, orderHint: localizeOrderHint(hint, dir, held && held.priceCurrency)});
     }
@@ -516,8 +541,11 @@ function computeSchemeTrades(schemeKey){
       : {ticker: 'CASH', name: 'Cash / Geldmarkt', targetVal: cashTarget, curVal: cashCur, trade: cashTrade, meta: null, orderHint: null, isin: built.cashIsin});
   }
   for(const [tk, {value, name, levels, ml_signal, orderHints, priceCurrency}] of byTicker){
-    if(!seen.has(tk) && passes(value)) rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
-      meta: {levels, ml_signal, twin: null}, orderHint: localizeOrderHint(orderHints ? orderHints.sell : null, 'sell', priceCurrency)});
+    if(seen.has(tk) || !passes(value)) continue;
+    const isExit = built.exits.has(tk);   // scheme leg sized to 0 by its ML state
+    rows.push({ticker: tk, name, targetVal: 0, curVal: value, trade: -value,
+      meta: {levels, ml_signal: isExit ? 'Sell' : ml_signal, twin: null},
+      orderHint: localizeOrderHint(isExit ? exitOrderHint(levels) : (orderHints ? orderHints.sell : null), 'sell', priceCurrency)});
   }
   rows.sort((x,y) => Math.abs(y.trade) - Math.abs(x.trade));
   return {total, rows, fx: holdings.fx, excludedHeld, band: built.band};
@@ -1096,19 +1124,13 @@ const recRank={Buy:3,Hold:2,Sell:1};
 const SIGNAL_RANK = {
   // reference
   'Sell':1,'Hold':2,'Buy':3,
-  // defensive
-  'Strong Sell':1,'Reduce':2,/*Hold:2 already*/'Strong Buy':5,
   // directional
   'Lev Short':1,'Short':2,'Neutral':3,'Long':4,'Lev Long':5,
   // tactical
   'Exit':1,'Wait':2,/*Hold:2*/'Enter':4,
 };
-// defensive 'Buy' = 4 (not in reference 'Buy'=3 — same label, same rank OK)
-SIGNAL_RANK['Buy'] = Math.max(SIGNAL_RANK['Buy']||0, 4);
-// defensive 'Hold' = 3 (keep max)
+// 'Hold' is shared by the reference and tactical axes (tactical Hold = 3, keep max).
 SIGNAL_RANK['Hold'] = Math.max(SIGNAL_RANK['Hold']||0, 3);
-// tactical 'Hold' = 3
-// Already set via max above.
 
 function signalRank(signal){ return signal ? (SIGNAL_RANK[signal] || 0) : 0; }
 
@@ -1118,7 +1140,7 @@ function normalizeSchema(json){
   // Synthesize v2 shape from flat summary fields
   json.columns = [
     {key:'rule',    label:'Rule',       axis:'reference', badge:'validated'},
-    {key:'ml_risk', label:'ML',         axis:'defensive'},
+    {key:'ml_risk', label:'ML',         axis:'binary'},
     {key:'dp',      label:'DP (Oracle)',axis:'reference', badge:'oracle'},
     {key:'ml',      label:'The Bet',    axis:'reference', badge:'experimental'},
   ];
@@ -1137,7 +1159,7 @@ function normalizeSchema(json){
 // ---------- glyph renderer ----------
 // Axis colour semantics: bearish → sell ramp, neutral → hold, bullish → buy ramp.
 // Strong/Lev variants use bold shades (--buy-strong / --sell-strong).
-const BEARISH_SIGNALS  = new Set(['Sell','Strong Sell','Reduce','Lev Short','Short','Exit']);
+const BEARISH_SIGNALS  = new Set(['Sell','Lev Short','Short','Exit']);
 const NEUTRAL_SIGNALS  = new Set(['Hold','Neutral','Wait']);
 // Everything else is treated bullish.
 
@@ -1145,12 +1167,12 @@ function signalColorClass(signal){
   if(!signal) return '';
   if(BEARISH_SIGNALS.has(signal)){
     // Extra-strong bearish
-    if(signal==='Strong Sell'||signal==='Lev Short') return 'sig-strong-sell';
+    if(signal==='Lev Short') return 'sig-strong-sell';
     return 'sig-sell';
   }
   if(NEUTRAL_SIGNALS.has(signal)) return 'sig-hold';
   // bullish
-  if(signal==='Strong Buy'||signal==='Lev Long') return 'sig-strong-buy';
+  if(signal==='Lev Long') return 'sig-strong-buy';
   return 'sig-buy';
 }
 
@@ -1162,8 +1184,13 @@ function glyph(cell, col){
   const axis   = (col && col.axis) || 'reference';
   const conf   = (typeof cell.conf === 'number') ? cell.conf : null;
   const colorCls = signalColorClass(sig);
-  const opacity  = conf !== null ? (0.45 + 0.55 * conf).toFixed(3) : '1';
-  const styleAttr = conf !== null ? ` style="opacity:${opacity}"` : '';
+  // Binary (graded ML filter) axis: the conviction is printed ("Buy · 73%"), not
+  // encoded as opacity — a faded "Sell" would read as a weak sell when a LOW
+  // conviction is exactly what a Sell is.
+  const isBinary = axis === 'binary';
+  const opacity  = (conf !== null && !isBinary) ? (0.45 + 0.55 * conf).toFixed(3) : '1';
+  const styleAttr = (conf !== null && !isBinary) ? ` style="opacity:${opacity}"` : '';
+  const label    = (isBinary && conf !== null) ? `${sig} · ${Math.round(conf * 100)}%` : sig;
 
   // Badge/paper superscript mark
   let mark = '';
@@ -1171,7 +1198,7 @@ function glyph(cell, col){
   else if(col && col.badge === 'oracle')  mark = `<sup title="Oracle — Rückschau, nicht handelbar">*</sup>`;
   else if(col && col.paper)               mark = `<sup title="paper only">&#x1D4AB;</sup>`;
 
-  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(sig)}${mark}</span>`;
+  return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(label)}${mark}</span>`;
 }
 
 // ---------- dynamic COLS helpers ----------
@@ -1269,13 +1296,13 @@ function applyPresetCols(){
 // used for Sharpe deltas, which are ratio differences, not returns).
 function numDeltaCell(v,d=2){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos'; const s=v>0?'+':''; return `<span class="num ${c}">${s}${v.toFixed(d)}</span>`; }
 
-// Order-execution hint direction, mirroring the Buy/Sell collapse in
-// functions/order_hint.py (the ml_risk panel signal is the authoritative
-// source — order_hint itself only carries type/price/rationale, not direction).
+// Order-execution hint direction (functions/order_hint.py: the ml_risk panel signal
+// — the graded filter's Buy/Sell — is the authoritative source; order_hint itself
+// only carries type/price/rationale, not direction).
 function orderDirection(r){
   const sig = r.panel && r.panel.ml_risk && r.panel.ml_risk.signal;
-  if(sig==='Buy'||sig==='Strong Buy') return 'buy';
-  if(sig==='Sell'||sig==='Strong Sell'||sig==='Reduce') return 'sell';
+  if(sig==='Buy') return 'buy';
+  if(sig==='Sell') return 'sell';
   return null;
 }
 function orderCell(oh,r){
@@ -1833,7 +1860,7 @@ const EXPLAIN = {
   'Rule':        'Regelbasierter Recommender: kauft bei Aufwärtstrend über 200DMA und gutem RSI; verkauft bei Umkehr.',
   'The Bet':     'Legacy ML-Modell (höchste CAGR im Backtest, Confidence-Sizing, kein Risiko-Overlay). Aggressivste Variante — hohe Rendite, hohes Drawdown-Risiko. ∗ = experimentell.',
   'DP (Oracle)': 'Rückblick-Optimum mit demselben Cut wie das Trainingslabel (dp_state_cut): bis zur Cut-Grenze durchgezogen, danach — noch nicht "settled" nahe dem aktuellen Rand — gestrichelt als vorläufiges Look-ahead. Benchmark, kein handelbares Signal. ∗ = Oracle.',
-  'ML':          'Produktions-Modell (dp_state_cut, er=0.90). Das tatsächlich ausgerollte Signal — Risiko-optimiert, konservativer als The Bet. Stärke: Drawdown-Kontrolle (Bärenjahre ca. −25% vs. −54% Buy&Hold), nicht Mehrrendite.',
+  'ML':          'Produktions-Modell (dp_state_cut, er=0.90). Geglättete Kaufwahrscheinlichkeit (IIR-Filter) mit Hysterese: Buy ab >80%, Sell unter 55%, dazwischen bleibt der letzte Zustand. Dasselbe Signal steuert Allokation und Order-Hinweise. Stärke: Drawdown-Kontrolle, nicht Mehrrendite.',
   'Swing':     'Swing-Trading-Signal: kurzfristige Trendfolge über ~14 Handelstage.',
   'Cons.':     'Consensus: gewichteter Mittelwert aller Recommender. Score +1 = max. Kauf, −1 = max. Verkauf. Mixed ⚠ = Recommender widersprechen sich.',
   'Δ1D':      'Tagesrendite: Kursänderung gegenüber dem Vortag in %.',
@@ -2528,10 +2555,6 @@ function draw(){
     legend($('#lg-price'), [[COL.close,'Close'], ...legendItems]);
   }
 
-  // ML is a 5-band signal ({-2..+2}); scale /2 so it shares the -1..1
-  // axis with Rule and DP-Oracle (tooltip still shows the raw band value).
-  const scaleHalf = a => a ? a.map(v => isNum(v) ? v / 2 : v) : a;
-
   // DP (Oracle): solid over the settled region (rec_dp_cut, which skips fillSteps
   // so its trailing NaN cut stays a gap), then a DASHED continuation over the
   // unsettled tail using the raw look-ahead rec_optimal. The solid→dashed handoff
@@ -2562,19 +2585,32 @@ function draw(){
     if (dpDashed) recSeries.push({data:dpDashed,color:COL.recO,width:1.4,dash:[4,3]});
     recLegend.push([COL.recO,'DP (Oracle) ∗']);
   }
-  if (showMlLive) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live)),color:COL.recM,width:1.8}); recLegend.push([COL.recM,'ML']); }
-  // Challenger (RICH165D rollout, 2026-08-02): same 5-band scale as the champion
-  // ML line above. Off by default and never in any consensus figure -- still
-  // being evaluated live. S.rec_ml_live_r165 is all-null on any bar scanned
-  // before the challenger existed; fillSteps/isNum already treat that as gaps.
-  if (showMlLiveR165 && S.rec_ml_live_r165) { recSeries.push({data:scaleHalf(fillSteps(S.rec_ml_live_r165)),color:COL.recM165,width:1.4,dash:[2,2]}); recLegend.push([COL.recM165,'ML (165d)']); }
+  // ML = the production recommendation: the graded filter's Buy/Sell state (step,
+  // 0 = Sell / 1 = Buy) with its filtered-P(buy) conviction as a thin line on the same
+  // 0..1 scale, and the Schmitt enter/exit guides (0.80 / 0.55) drawn behind it.
+  const mlHlines = [{y:0,color:'#3a424e'}];
+  if (showMlLive && hasData(S.rec_ml_state)) {
+    recSeries.push({data:fillSteps(S.rec_ml_conv),color:COL.recMConv,width:0.9});
+    recSeries.push({data:fillSteps(S.rec_ml_state),color:COL.recM,width:1.8});
+    recLegend.push([COL.recM,'ML (Buy/Sell)'], [COL.recMConv,'Konviktion']);
+    mlHlines.push({y:0.80,color:'#6b3a3a'}, {y:0.55,color:'#6b3a3a'});
+  }
+  // Challenger (RICH165D rollout, 2026-08-02): its own state step + conviction. Off
+  // by default and never in any consensus figure -- still being evaluated live.
+  // S.rec_ml_state_r165 is all-null on any bar scanned before the challenger
+  // existed; fillSteps/isNum already treat that as gaps.
+  if (showMlLiveR165 && hasData(S.rec_ml_state_r165)) {
+    recSeries.push({data:fillSteps(S.rec_ml_conv_r165),color:COL.recM165Conv,width:0.9,dash:[2,2]});
+    recSeries.push({data:fillSteps(S.rec_ml_state_r165),color:COL.recM165,width:1.4,dash:[2,2]});
+    recLegend.push([COL.recM165,'ML (165d)']);
+  }
   // Raw ML output: the signed model probability (Recommendation_SVM, already in [-1,1]),
   // BEFORE the smoothing/hysteresis the 'ML' line applies -- shown thin so the smoothed
   // line reads on top. Off by default (a diagnostic overlay).
   if (showMlRaw && S.rec_ml_raw) { recSeries.push({data:fillSteps(S.rec_ml_raw),color:COL.recRaw,width:1.1}); recLegend.push([COL.recRaw,'Raw ML']); }
 
   charts.rec = plot({ canvas:$('#c-rec'), x:S.date, yMin:-1.15, yMax:1.15, yticks:2,
-    yfmt:v=>v.toFixed(0), hlines:[{y:0,color:'#3a424e'}],
+    yfmt:v=>v.toFixed(0), hlines:mlHlines,
     series: recSeries });
   legend($('#lg-rec'), recLegend);
 
@@ -2604,6 +2640,13 @@ function onMove(e){
   }
   showTip(e,S,idx);  // cheap DOM update — keeps following the cursor every move
 }
+// "Buy · 73%" / "Sell · 41%" tooltip value for the graded ML state + conviction series.
+function mlStateLabel(state, conv, i){
+  const st = state && state[i];
+  if(!isNum(st)) return '—';
+  const c = conv && conv[i];
+  return (st >= 0.5 ? 'Buy' : 'Sell') + (isNum(c) ? ` · ${Math.round(c*100)}%` : '');
+}
 function showTip(e,S,i){
   const tip=$('#tip');
   const useCandle = chartType === 'candle' && Array.isArray(S.open) && S.open.length > 0;
@@ -2630,8 +2673,8 @@ function showTip(e,S,i){
       // Tooltip rows mirror the rec-subplot checkboxes: a hidden line shouldn't
       // still report a value in the hover panel.
       ['Rule',COL.recF, showRule ? fNum(S.rec_filtered&&S.rec_filtered[i],0) : '—'],
-      ['ML',COL.recM, showMlLive ? fNum(S.rec_ml_live&&S.rec_ml_live[i],0) : '—'],
-      ['ML (165d)',COL.recM165, showMlLiveR165 ? fNum(S.rec_ml_live_r165&&S.rec_ml_live_r165[i],0) : '—'],
+      ['ML',COL.recM, showMlLive ? mlStateLabel(S.rec_ml_state, S.rec_ml_conv, i) : '—'],
+      ['ML (165d)',COL.recM165, showMlLiveR165 ? mlStateLabel(S.rec_ml_state_r165, S.rec_ml_conv_r165, i) : '—'],
       // Raw ML: continuous signed P(buy) in [-1,1] -- 2 decimals (not 0 like the discrete lines).
       ['Raw ML',COL.recRaw, (showMlRaw && S.rec_ml_raw && isNum(S.rec_ml_raw[i])) ? S.rec_ml_raw[i].toFixed(2) : '—'],
       // Settled bars show the cut value; unsettled tail shows the look-ahead

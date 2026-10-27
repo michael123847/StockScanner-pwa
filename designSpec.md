@@ -81,9 +81,9 @@ Consensus is shown only in the row-sheet popup, not as a table column.
 
 ## Order-execution hint
 
-`functions/order_hint.py` collapses the ML panel's 5-band signal (Strong Sell/Reduce/Hold/
-Buy/Strong Buy) to Buy/Sell and derives a market-vs-limit order type + price from already-computed
-levels (MA50, Bollinger, Fibonacci, RSI) — no new data source. Green (`buy`) / red (`sell`) via the
+`functions/order_hint.py` takes the ML panel's binary Buy/Sell signal (the graded filter state; the
+old 5-band labels are retired) — Sell is always a market ML-off exit — and derives a market-vs-limit
+order type + price from already-computed levels (MA50, Bollinger, Fibonacci, RSI) — no new data source. Green (`buy`) / red (`sell`) via the
 same `.num.pos`/`.num.neg` tokens used throughout the app. Validated against real history
 (`scripts/backtest_order_hint.py`, `docs/stockscanner.md` §5): limits fill ~70% within 20 days at a
 real median price edge over an immediate market order, but ~17% of all limit recommendations sit
