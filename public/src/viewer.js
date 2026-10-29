@@ -454,6 +454,11 @@ function exitOrderHint(levels){
 // every already-held leg (B&H and ML-timed alike) while |drift| < band — drift
 // within the band is deliberate holding, not a trade signal. Exception: a leg
 // whose target is 0 (signal off) is always exited in full, never band-eaten.
+// "Held" means held for real: a position below the dust test (passes(): >= DUST_PCT of
+// the book AND >= MIN_ORDER_CHF) -- e.g. a 0.01 USD placeholder row kept so a ticker
+// stays in the lists -- counts as not held, so a timed leg's ENTRY (target > 0, not
+// really held) is a signal trade that the band never swallows. scanner/digest/data.py
+// _allocation_drift_reminder() applies the same rule.
 function computeSchemeTrades(schemeKey){
   const built = buildSchemeTargets(schemeKey);
   const holdings = portfolioHoldingsData;
@@ -511,7 +516,9 @@ function computeSchemeTrades(schemeKey){
     // (signal off / de-risk exit) always trades in full -- the band must
     // never swallow an exit.
     const isFloorLeg = meta && meta.rebalance === 'floor';
-    const inBand = !isFloorLeg && built.band > 0 && curVal > 0 && pct > 0 && Math.abs(trade) / total * 100 < built.band;
+    const isTimed = !!meta && (isFloorLeg || isNum(meta.signal_state) || !!meta.ml_signal);
+    const isEntry = isTimed && !(curVal > 0 && passes(curVal));
+    const inBand = !isFloorLeg && !isEntry && built.band > 0 && curVal > 0 && pct > 0 && Math.abs(trade) / total * 100 < built.band;
     if(inBand) continue;
     if(passes(Math.abs(trade))){
       const dir = trade > 0 ? 'buy' : 'sell';
@@ -821,7 +828,7 @@ function renderTradesHtml(result){
     }),
       umverteilt auf die Zielgewichte des gewählten Schemas — Positionen außerhalb des Schemas
       werden vollständig verkauft, fehlende Schema-Positionen aus Cash gekauft.${
-      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen — außer QLD (handelt auf der CHF-/Dust-Schwelle statt auf dem Band, kein tägliches Trading) und ein Signal-Ausstieg auf 0%, der immer voll gehandelt wird.` : ''
+      result.band > 0 ? ` Nur nötige Trades: Positionen innerhalb &plusmn;${result.band}pp Rebalance-Band bleiben liegen — außer QLD (handelt auf der CHF-/Dust-Schwelle statt auf dem Band, kein tägliches Trading) sowie ein Signal-Ausstieg auf 0% (wird immer voll gehandelt) und ein Signal-Einstieg (Kauf bis zum Ziel).` : ''
     } Trades &lt;0.5% oder &lt;1000 CHF werden ausgeblendet. Zeile antippen für Details.</p>
   `;
 }
@@ -2586,12 +2593,14 @@ function draw(){
     recLegend.push([COL.recO,'DP (Oracle) ∗']);
   }
   // ML = the production recommendation: the graded filter's Buy/Sell state (step,
-  // 0 = Sell / 1 = Buy) with its filtered-P(buy) conviction as a thin line on the same
-  // 0..1 scale, and the Schmitt enter/exit guides (0.80 / 0.55) drawn behind it.
+  // plotted as -1 = Sell / +1 = Buy like Rule and DP, so it spans the panel's full
+  // -1..1 axis; the series itself stays 0/1) with its filtered-P(buy) conviction as a
+  // thin 0..1 line, and the Schmitt enter/exit guides (0.80 / 0.55) drawn behind it.
+  const mlSigned = a => fillSteps(a).map(v => isNum(v) ? (v >= 0.5 ? 1 : -1) : v);
   const mlHlines = [{y:0,color:'#3a424e'}];
   if (showMlLive && hasData(S.rec_ml_state)) {
     recSeries.push({data:fillSteps(S.rec_ml_conv),color:COL.recMConv,width:0.9});
-    recSeries.push({data:fillSteps(S.rec_ml_state),color:COL.recM,width:1.8});
+    recSeries.push({data:mlSigned(S.rec_ml_state),color:COL.recM,width:1.8});
     recLegend.push([COL.recM,'ML (Buy/Sell)'], [COL.recMConv,'Konviktion']);
     mlHlines.push({y:0.80,color:'#6b3a3a'}, {y:0.55,color:'#6b3a3a'});
   }
@@ -2601,7 +2610,7 @@ function draw(){
   // existed; fillSteps/isNum already treat that as gaps.
   if (showMlLiveR165 && hasData(S.rec_ml_state_r165)) {
     recSeries.push({data:fillSteps(S.rec_ml_conv_r165),color:COL.recM165Conv,width:0.9,dash:[2,2]});
-    recSeries.push({data:fillSteps(S.rec_ml_state_r165),color:COL.recM165,width:1.4,dash:[2,2]});
+    recSeries.push({data:mlSigned(S.rec_ml_state_r165),color:COL.recM165,width:1.4,dash:[2,2]});
     recLegend.push([COL.recM165,'ML (165d)']);
   }
   // Raw ML output: the signed model probability (Recommendation_SVM, already in [-1,1]),
