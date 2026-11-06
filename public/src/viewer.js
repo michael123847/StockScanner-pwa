@@ -55,6 +55,55 @@ function setActiveScheme(v){
   try { localStorage.setItem(ACTIVE_SCHEME_KEY, v); } catch {}
 }
 
+// A timed leg of the ACTIVE scheme drives the signal for its own ticker and for
+// every same-underlying wrapper listed in its `equivalents` (e.g. a proxy
+// wrapper of a timed leg): the scheme arm is timed on the native ticker's
+// prices, so the wrapper's own scanner signal is the wrong one to show.
+// Everything comes from allocationData; null when it (or the active scheme)
+// is missing, so list rows then fall back to their own report signal.
+function timedLegFor(ticker){
+  const key = getActiveScheme();
+  const block = allocationData && allocationData.schemes && key && allocationData.schemes[key];
+  if(!block) return null;
+  for(const leg of [...(block.positions||[]), ...(block.sleeves||[])]){
+    const legTicker = leg.ticker || leg.sleeve;
+    if(!legTicker || !leg.ml_signal) continue;
+    if(legTicker === ticker || (leg.equivalents||[]).includes(ticker)) return {leg, legTicker};
+  }
+  return null;
+}
+
+// ML panel cell for a report row: the leg's signal/conviction when the row is
+// (a wrapper of) a timed leg of the active scheme, else the row's own cell.
+// Recomputed per render and never written back to the cached report row, so a
+// scheme switch leaves no stale override. native_conv_pct is the continuous
+// conviction on the native ticker; conviction_pct (binary 0/100 on some legs)
+// is only the fallback for older allocation.json files.
+function effectiveMlCell(r){
+  const own = (r.panel && r.panel.ml_risk) || null;
+  const m = timedLegFor(r.ticker);
+  if(!m) return own;
+  const pct = isNum(m.leg.native_conv_pct) ? m.leg.native_conv_pct
+    : (isNum(m.leg.conviction_pct) ? m.leg.conviction_pct : null);
+  return {...(own||{}), signal: m.leg.ml_signal, conf: pct==null ? null : pct/100,
+    viaLeg: m.legTicker !== r.ticker ? m.legTicker : null};
+}
+
+// Order hint matching the effective signal. When the leg signal differs from the
+// row's own, r.order_hint (computed for the own signal) would contradict it, so
+// use the directional hint from r.order_hints, or none if the report lacks it.
+function effectiveOrderHint(r){
+  const own = r.panel && r.panel.ml_risk && r.panel.ml_risk.signal;
+  const eff = effectiveMlCell(r);
+  if(!eff || eff.signal === own) return r.order_hint;
+  const dir = orderDirection(r);
+  // A sell of a leg whose signal is off is a de-risk exit: market at the last
+  // close, never a limit (same rule as exitOrderHint in the trade list).
+  if(dir === 'sell') return localizeOrderHint(exitOrderHint(r.levels), 'sell', r.price_currency);
+  const h = (dir && r.order_hints) ? r.order_hints[dir] : null;
+  return h ? localizeOrderHint(h, dir, r.price_currency) : null;
+}
+
 // ---------- table variant ----------
 const TABLE_PRESET_KEY  = 'pwa.stocks.tablePreset';
 // ML is the benchmark signal column (2026-07 — Consensus, a weighted panel
@@ -153,6 +202,9 @@ export async function ensureAllocation(){
   }
   const panel = $('#alloc-panel');
   if(panel && panel.style.display !== 'none') renderAllocation();
+  // List rows may already be on screen: their ML/Order cells depend on the
+  // active scheme's timed legs (effectiveMlCell), so redraw once it is known.
+  if(allocationData && DATA) renderOverview();
   return allocationData;
 }
 
@@ -506,7 +558,7 @@ function computeSchemeTrades(schemeKey){
     // viaEquivalent (same-underlying match, e.g. GLD leg <-> held ZGLD.SW) needs
     // the identical override: the scheme's own levels are for the OTHER wrapper.
     const viaSub = meta && (meta.viaProxy || meta.viaEquivalent) && held && held.levels;
-    const rowMeta = viaSub ? {...meta, levels: held.levels, ml_signal: held.ml_signal}
+    const rowMeta = viaSub ? {...meta, levels: held.levels}
       : (meta || (held && held.levels ? {levels: held.levels, ml_signal: held.ml_signal, twin: null} : null));
     // The band applies to every held leg EXCEPT one explicitly flagged
     // `rebalance: 'floor'` by the producer (QLD only since 2026-10-25, was QLD/ETH at v1.8.48 -- 2026-09-28
@@ -1205,6 +1257,8 @@ function glyph(cell, col){
   else if(col && col.badge === 'oracle')  mark = `<sup title="Oracle — Rückschau, nicht handelbar">*</sup>`;
   else if(col && col.paper)               mark = `<sup title="paper only">&#x1D4AB;</sup>`;
 
+  if(cell.viaLeg) mark += `<sup title="${esc('Signal von ' + cell.viaLeg + ' (native Kurse), wie in der Allokation')}">&Dagger;</sup>`;
+
   return `<span class="glyph ax-${axis} ${colorCls}"${styleAttr}>${esc(label)}${mark}</span>`;
 }
 
@@ -1240,7 +1294,7 @@ function buildCols(){
   ];
   const dynamicPanel = panelCols.map(col => [
     col.label,
-    r => (r.panel && r.panel[col.key]) ? r.panel[col.key] : null,
+    r => col.key==='ml_risk' ? effectiveMlCell(r) : ((r.panel && r.panel[col.key]) ? r.panel[col.key] : null),
     (cell) => glyph(cell, col),
     'b',
     {panelCol: col},  // metadata at index 4 for sortVal
@@ -1253,7 +1307,7 @@ function buildCols(){
     ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
     ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
     ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
-    ['Order',    r=>r.order_hint,             (v,r)=>orderCell(v,r),   'n'],
+    ['Order',    r=>effectiveOrderHint(r),             (v,r)=>orderCell(v,r),   'n'],
   ];
 
   // Value column — only injected when the report has holdings (fx snapshot present)
@@ -1281,7 +1335,7 @@ let COLS = [
   ['50DMA',    r=>r.s['50DMA'],             v=>fSig(v),              'n'],
   ['Δ21D',     r=>r.s['Change_21D'],        v=>pctCell(v),           'n'],
   ['Mom14',    r=>r.s['Momentum'],          v=>pctCell(v),           'n'],
-  ['Order',    r=>r.order_hint,             (v,r)=>orderCell(v,r),   'n'],
+  ['Order',    r=>effectiveOrderHint(r),             (v,r)=>orderCell(v,r),   'n'],
 ];
 
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1307,7 +1361,8 @@ function numDeltaCell(v,d=2){ if(!isNum(v)) return '—'; const c=v<0?'neg':'pos
 // — the graded filter's Buy/Sell — is the authoritative source; order_hint itself
 // only carries type/price/rationale, not direction).
 function orderDirection(r){
-  const sig = r.panel && r.panel.ml_risk && r.panel.ml_risk.signal;
+  const eff = effectiveMlCell(r);
+  const sig = eff && eff.signal;
   if(sig==='Buy') return 'buy';
   if(sig==='Sell') return 'sell';
   return null;
@@ -1896,7 +1951,7 @@ function openRowSheet(ticker){
   const consHtml=consensusGlyph(r.consensus);
   const recsHtml=[
     ...panelCols.map(col=>{
-      const g=glyph(r.panel&&r.panel[col.key],col);
+      const g=glyph(col.key==='ml_risk'?effectiveMlCell(r):(r.panel&&r.panel[col.key]),col);
       return g==='—'?'':
         `<div class="rs-metric"><span class="rs-metric-label">${esc(col.label)}</span><span class="rs-metric-value">${g}</span></div>`;
     }),
@@ -1934,7 +1989,7 @@ function openRowSheet(ticker){
   // Order-execution hint: only present when the report carries one (active Buy/Sell
   // on the production ML signal) -- see functions/order_hint.py. Same green/red
   // buy/sell coloring as the Order column in Übersicht (orderCell/orderDirection).
-  const oh = r.order_hint;
+  const oh = effectiveOrderHint(r);
   const orderDir = orderDirection(r);
   const orderCls = orderDir==='buy' ? 'pos' : (orderDir==='sell' ? 'neg' : '');
   // Opposite-direction level: r.order_hints ({buy,sell}, backend's
@@ -2747,6 +2802,7 @@ export function initViewer(){
       // the newly-active scheme, without viewer.js needing to import it.
       window.dispatchEvent(new CustomEvent('ss:scheme-activated', { detail: cur }));
       if(allocationData) renderAllocation();
+      if(DATA) renderOverview();   // list ML/Order cells follow the active scheme
     });
   }
 
